@@ -1,0 +1,52 @@
+name: Pages
+
+# Publishes the plugin repository manifest and landing page.
+#
+# Kept separate from release.yml because the github-pages environment restricts deployments to the
+# default branch, while releases are triggered by tags. The release workflow commits the updated
+# manifest to main, which lands here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the manifest before publishing it
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array" and length > 0' docs/manifest.json > /dev/null
+          jq -e '.[0].guid == "3fbf911d-ab0c-46dc-81d6-b3317bb8b176"' docs/manifest.json > /dev/null
+          # Every published version must carry the fields Jellyfin needs to install it.
+          jq -e '[.[0].versions[] | select(
+                   (.version|type=="string") and (.targetAbi|type=="string") and
+                   (.sourceUrl|type=="string") and (.checksum|type=="string"))] | length
+                 == (.[0].versions | length)' docs/manifest.json > /dev/null
+          echo "manifest valid; $(jq '.[0].versions | length' docs/manifest.json) version(s) published"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4

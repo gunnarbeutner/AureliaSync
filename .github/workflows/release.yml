@@ -12,8 +12,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: release
@@ -22,9 +20,10 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.pages.outputs.page_url }}
+
+    # Publishing to Pages is deliberately NOT done here. The github-pages environment restricts
+    # deployments to the default branch, and this workflow runs on a tag. Instead this job commits
+    # the manifest to main, and pages.yml publishes docs/ from main.
 
     # Version lanes. Jellyfin picks the highest version number among entries whose targetAbi is
     # <= the server version, so each ABI must own a disjoint version range or a newer server will
@@ -164,22 +163,20 @@ jobs:
           echo "manifest=$WANT published=$GOT"
           [ "$WANT" = "$GOT" ] || { echo "::error::manifest checksum does not match the published asset"; exit 1; }
 
+      # Pushing this to main triggers pages.yml, which publishes the updated manifest.
       - name: Commit the manifest
         run: |
           set -euo pipefail
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git checkout main
-          git pull --rebase origin main
+
+          MANIFEST=$(cat docs/manifest.json)
+          git fetch origin main
+          git checkout -B main origin/main
+          printf '%s\n' "$MANIFEST" > docs/manifest.json
+
           git add docs/manifest.json
           git diff --staged --quiet || {
-            git commit -m "ci: publish manifest entry for ${{ steps.ver.outputs.tag }}"
+            git commit -m "Publish manifest entry for ${{ steps.ver.outputs.tag }}"
             git push origin main
           }
-
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
-      - id: pages
-        uses: actions/deploy-pages@v4
