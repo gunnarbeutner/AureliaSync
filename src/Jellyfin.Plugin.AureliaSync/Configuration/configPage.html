@@ -4,8 +4,11 @@
     <title>Aurelia Sync</title>
 </head>
 <body>
-<div id="AureliaSyncConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
-     data-controller="__plugin/aureliasync.js">
+<!-- No data-controller: this page's script is inline. Naming a controller module makes Jellyfin's
+     view manager try to load it, and when it cannot, the page never receives pageshow — which
+     leaves every field blank while the inline script still binds submit, so saving posts empty
+     values. -->
+<div id="AureliaSyncConfigPage" data-role="page" class="page type-interior pluginConfigurationPage">
     <div data-role="content">
         <div class="content-primary">
 
@@ -181,6 +184,30 @@
                     </div>
                 </div>
 
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="EnableGapRepair" name="EnableGapRepair" type="checkbox" is="emby-checkbox" />
+                        <span>Repair clients instead of resending the catalog</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        When a client has been away long enough to fall outside the change journal, send
+                        only what changed plus a list of what still exists, rather than the whole library
+                        again. Turn off to always send a fresh catalog.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="FastHydration" name="FastHydration" type="checkbox" is="emby-checkbox" />
+                        <span>Fast library reads</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Skips a redundant parsing step when reading tracks from Jellyfin, taking roughly
+                        a third off the time to prepare a library. Verified to produce identical data;
+                        turn off if a future Jellyfin release ever makes that untrue.
+                    </div>
+                </div>
+
                 <div>
                     <button is="emby-button" type="submit" class="raised button-submit block emby-button">
                         <span>Save</span>
@@ -203,11 +230,14 @@
                 'StoragePressureMegabytes',
                 'DefaultChecksumMode'
             ];
-            var checkboxFields = ['Enabled', 'EnableGzip', 'AudioPlaylistsOnly', 'VerboseDiagnostics'];
+            var checkboxFields = [
+                'Enabled', 'EnableGzip', 'AudioPlaylistsOnly', 'VerboseDiagnostics',
+                'EnableGapRepair', 'FastHydration'
+            ];
 
-            document.querySelector('#AureliaSyncConfigPage').addEventListener('pageshow', function () {
+            function load() {
                 Dashboard.showLoadingMsg();
-                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                return ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                     textFields.forEach(function (name) {
                         document.querySelector('#' + name).value = config[name];
                     });
@@ -215,8 +245,20 @@
                         document.querySelector('#' + name).checked = config[name];
                     });
                     Dashboard.hideLoadingMsg();
+                }, function (error) {
+                    // Without this the spinner outlives the failure and the page looks hung.
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert({ message: 'Could not load the Aurelia Sync settings.' });
+                    console.error('AureliaSync: loading configuration failed', error);
                 });
-            });
+            }
+
+            var page = document.querySelector('#AureliaSyncConfigPage');
+            page.addEventListener('pageshow', load);
+
+            // pageshow has already fired by the time an embedded page's script runs in some
+            // dashboard versions, which would leave every field blank with no error anywhere.
+            load();
 
             document.querySelector('#AureliaSyncConfigForm').addEventListener('submit', function (e) {
                 e.preventDefault();
@@ -224,14 +266,28 @@
                 ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                     textFields.forEach(function (name) {
                         var el = document.querySelector('#' + name);
-                        config[name] = el.type === 'number' ? parseInt(el.value, 10) : el.value;
+                        if (el.type !== 'number') {
+                            config[name] = el.value;
+                            return;
+                        }
+
+                        // An empty box must leave the stored value alone. Sending NaN serialises to
+                        // null, which the server rejects, and the rejection used to hang the spinner.
+                        var parsed = parseInt(el.value, 10);
+                        if (!isNaN(parsed)) {
+                            config[name] = parsed;
+                        }
                     });
                     checkboxFields.forEach(function (name) {
                         config[name] = document.querySelector('#' + name).checked;
                     });
-                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                    return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                     });
+                }).catch(function (error) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert({ message: 'Could not save the Aurelia Sync settings.' });
+                    console.error('AureliaSync: saving configuration failed', error);
                 });
                 return false;
             });
