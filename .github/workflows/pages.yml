@@ -47,11 +47,13 @@ jobs:
           set -euo pipefail
           jq -e 'type == "array" and length > 0' docs/manifest.json > /dev/null
           jq -e '.[0].guid == "3fbf911d-ab0c-46dc-81d6-b3317bb8b176"' docs/manifest.json > /dev/null
-          # Every published version must carry the fields Jellyfin needs to install it.
-          jq -e '[.[0].versions[] | select(
-                   (.version|type=="string") and (.targetAbi|type=="string") and
-                   (.sourceUrl|type=="string") and (.checksum|type=="string"))] | length
-                 == (.[0].versions | length)' docs/manifest.json > /dev/null
+          # Every published version must carry the fields Jellyfin needs to install it. Bind the
+          # version array first: after a pipe, '.' is the piped value, not the document.
+          jq -e '.[0].versions as $v
+                 | ($v | map(select((.version|type=="string") and (.targetAbi|type=="string")
+                                    and (.sourceUrl|type=="string") and (.checksum|type=="string")))
+                       | length)
+                   == ($v | length)' docs/manifest.json > /dev/null
           echo "manifest valid; $(jq '.[0].versions | length' docs/manifest.json) version(s) published"
 
       - uses: actions/configure-pages@v5
