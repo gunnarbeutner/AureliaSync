@@ -53,6 +53,41 @@ adversarially provoked.
 
 ---
 
+## Introduced in 1.2.0
+
+### Snapshot build time may have regressed, and the measurements cannot settle it
+
+Progressive delivery made the client-visible wait collapse — first record in 0.5 s instead of ~100 s,
+and no empty segments at all. But the *build* itself now measures 205 s clean, against 97–128 s for
+the earliest builds under the old code.
+
+That is not a clean comparison. Old-code builds ranged 97 s to 282 s and new-code builds 205 s to
+276 s, so the ranges overlap and server load plainly dominates. The plausible new cost is one extra
+small write per hydration batch to publish the watermark — perhaps a few seconds, not eighty. It has
+not been isolated.
+
+Worth measuring properly on an otherwise idle server before concluding anything. If it is real, the
+watermark could be published every N batches instead of every batch, which costs a little delivery
+smoothness and nothing else.
+
+### Repair mode has never run
+
+`journalGap` now triggers a repair — changed items plus a manifest of surviving identifiers — rather
+than a full snapshot. Every piece of it is exercised by unit tests and it is deployed, but **no
+client has fallen out of retention since**, so the path has never executed end to end.
+
+It also rests on two assumptions worth restating:
+
+- **`DateLastSaved` moves for every change that matters.** Same assumption as reconciliation's fast
+  path, and we already know one counterexample — playlist membership. Playlists are therefore always
+  sent in full during a repair.
+- **The manifest is applied at promotion, not per record.** A client that prunes against a partially
+  received manifest deletes most of its library. This is stated in `COMM.md`; it is the single most
+  dangerous thing about the design.
+
+`EnableGapRepair` turns it off and restores the old full-snapshot behaviour if either assumption
+turns out to be wrong.
+
 ## Correctness gaps
 
 ### Two-user visibility is still unverified — and now matters more
