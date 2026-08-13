@@ -42,8 +42,90 @@ internal static class FixtureBuilder
             ["snapshot-complete.ndjson"] = CompleteSnapshot(),
             ["snapshot-partial.ndjson"] = PartialSegment(),
             ["stream-error.ndjson"] = ErroredSegment(),
-            ["changes-segment.ndjson"] = ChangesSegment()
+            ["changes-segment.ndjson"] = ChangesSegment(),
+            ["repair-segment.ndjson"] = RepairSegment()
         };
+
+    /// <summary>
+    /// A repair session: changed items, plus the manifest of what still exists.
+    /// </summary>
+    /// <remarks>
+    /// The dangerous part of a repair is the manifest, so this fixture is built to make a wrong
+    /// implementation fail rather than a right one pass. The manifest arrives in more than one chunk
+    /// and lists identifiers this segment never upserts: a client that prunes per record, instead of
+    /// accumulating every chunk and pruning once at promotion, deletes almost everything.
+    /// </remarks>
+    private static string RepairSegment()
+    {
+        var ordinal = 8100L;
+        string Next() => Cursor.ForSnapshot(Generation, ++ordinal).Encode();
+
+        var lines = new List<string>
+        {
+            Serialize(new SegmentBegin
+            {
+                SessionId = "kQ7xample000000000000000000000000000000000",
+                Mode = "repair",
+                Generation = Generation,
+                ServerTime = ServerTime
+            })
+        };
+
+        // Only the track that actually changed is re-sent. Everything else the client keeps.
+        lines.Add(Record(Next(), ordinal, WireKind.ItemUpsert, WireEntityType.Track, TrackTwoId, new TrackPayload
+        {
+            Id = TrackTwoId,
+            Name = "Jóga",
+            AlbumId = AlbumId,
+            AlbumName = "Homogenic",
+            ArtistId = ArtistId,
+            ArtistIDs = new[] { ArtistId },
+            ArtistName = "Björk",
+            GenreIDs = new[] { GenreId },
+            IndexNumber = 2,
+            Duration = 302.5,
+            SortName = "0001 - 0002 - Joga"
+        }));
+
+        // Two chunks for one entity type, and TrackOneId appears only here — never upserted in this
+        // segment. Pruning against either chunk alone would delete a track that must survive.
+        lines.Add(Record(Next(), ordinal, WireKind.CatalogManifest, WireEntityType.Track, "manifest-0",
+            new ManifestPayload
+            {
+                Id = "manifest-0",
+                EntityType = WireEntityType.Track,
+                Ids = new[] { TrackOneId }
+            }));
+
+        lines.Add(Record(Next(), ordinal, WireKind.CatalogManifest, WireEntityType.Track, "manifest-1",
+            new ManifestPayload
+            {
+                Id = "manifest-1",
+                EntityType = WireEntityType.Track,
+                Ids = new[] { TrackTwoId }
+            }));
+
+        lines.Add(Record(Next(), ordinal, WireKind.CatalogManifest, WireEntityType.Album, "manifest-2",
+            new ManifestPayload
+            {
+                Id = "manifest-2",
+                EntityType = WireEntityType.Album,
+                Ids = new[] { AlbumId }
+            }));
+
+        lines.Add(Serialize(new SegmentEnd
+        {
+            Cursor = Cursor.ForSnapshot(Generation, ordinal).Encode(),
+            RecordCount = lines.Count - 1,
+            ByteCount = 0,
+            CaughtUp = true,
+            SessionUpperBound = ordinal,
+            StopReason = "upperBound",
+            NextAfter = Cursor.ForSnapshot(Generation, ordinal).Encode()
+        }));
+
+        return string.Join('\n', lines) + "\n";
+    }
 
     /// <summary>
     /// A change session: journal cursors, a tombstone, and a user-data clear.

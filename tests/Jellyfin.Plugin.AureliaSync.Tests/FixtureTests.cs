@@ -102,10 +102,15 @@ public class FixtureTests
     [Fact]
     public void OnlyKindsTheClientToleratesAppear()
     {
+        // The client treats an unrecognised kind as fatal rather than skipping it, so this list is
+        // a release gate: adding to it means the client must already handle the new kind. It is
+        // deliberately spelled out here rather than derived from WireKind, because deriving it would
+        // make every new kind silently allowed — which is the failure this guards against.
         var allowed = new HashSet<string>(StringComparer.Ordinal)
         {
             WireKind.SegmentBegin, WireKind.SegmentEnd, WireKind.Error,
-            WireKind.ItemUpsert, WireKind.PlaylistReplace, WireKind.UserDataUpsert, WireKind.ItemDelete
+            WireKind.ItemUpsert, WireKind.PlaylistReplace, WireKind.UserDataUpsert, WireKind.ItemDelete,
+            WireKind.CatalogManifest
         };
 
         foreach (var (name, content) in FixtureBuilder.All())

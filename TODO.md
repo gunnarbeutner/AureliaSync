@@ -63,9 +63,20 @@ structurally incapable of catching a server-side error, having been computed fro
 would have had to disprove. The snapshot digest was worse: producing it re-read every row of the
 finished snapshot on every build, and no code path ever read the result.
 
-What was actually lost is worth stating plainly: the snapshot digest was the oracle that proved
-`FastHydration` byte-neutral, and that was genuinely valuable. Nothing now catches a regression of
-that kind automatically. Re-establishing the check means hashing two builds by hand.
+An earlier draft of this note claimed removing them lost an automatic regression check. That was
+wrong, and worth correcting rather than quietly fixing: **nothing was checking automatically before
+either.** The snapshot digest was computed on every build and compared against nothing. What existed
+was a manual affordance, used exactly once — to prove `FastHydration` byte-neutral.
+
+Payload stability belongs in tests, and already is there: `docs/fixtures/*.ndjson` are byte-exact
+golden files generated from the real wire types, and `FixtureTests` fails on any drift. That covers
+every record kind, costs nothing on the wire, and catches changes a runtime digest never could,
+because it compares against a *previous* known-good output rather than against itself.
+
+The one boundary tests cannot reach is Jellyfin's own hydration — `Jellyfin.Server.Implementations`
+is not published to NuGet, so `BaseItemRepository.DeserializeBaseItem` cannot be driven from a unit
+test. That specific assumption behind `FastHydration` is only checkable against a real server, by
+building twice with the flag flipped and diffing. Worth doing on a Jellyfin upgrade, not on a timer.
 
 `M006DropChecksums` drops the three columns. The per-record one was never populated at all.
 
