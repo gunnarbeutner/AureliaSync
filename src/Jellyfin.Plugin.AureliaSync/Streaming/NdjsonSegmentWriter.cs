@@ -86,11 +86,6 @@ public sealed class NdjsonSegmentWriter
         var buffer = new ArrayBufferWriter<byte>(FlushThreshold * 2);
         var stopwatch = Stopwatch.StartNew();
 
-        // Accumulated over the payload bytes in delivery order. This is the protocol's only
-        // end-to-end integrity check, and it costs nothing here because the bytes are already in
-        // hand on their way to the socket.
-        using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-
         long total = 0;
         long payloadBytes = 0;
         var written = 0;
@@ -139,7 +134,6 @@ public sealed class NdjsonSegmentWriter
 
             total += await WriteRecordAsync(output, buffer, row, cursorFor, cancellationToken)
                 .ConfigureAwait(false);
-            digest.AppendData(row.Payload);
             payloadBytes += row.Payload.Length;
             lastOrdinal = row.Ordinal;
             written++;
@@ -162,7 +156,6 @@ public sealed class NdjsonSegmentWriter
             ByteCount = payloadBytes,
             CaughtUp = caughtUp,
             SessionUpperBound = upperBound,
-            AggregateChecksum = "sha256:" + Convert.ToHexStringLower(digest.GetHashAndReset()),
             StopReason = caughtUp ? SegmentOutcome.StopUpperBound : stopReason,
             NextAfter = cursor
         };
@@ -213,11 +206,6 @@ public sealed class NdjsonSegmentWriter
             }
 
             writer.WriteString("entityId", row.EntityId);
-
-            if (row.Checksum is not null)
-            {
-                writer.WriteString("checksum", row.Checksum);
-            }
 
             writer.WritePropertyName("payload");
 

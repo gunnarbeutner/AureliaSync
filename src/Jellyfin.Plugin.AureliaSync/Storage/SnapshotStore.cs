@@ -15,7 +15,7 @@ public sealed class SnapshotStore
     private const string SelectColumns =
         """
         SELECT generation, user_id, state, baseline_sequence, wire_schema, row_count, byte_count,
-               checksum, phase, phase_done, phase_total, error_code, error_detail,
+               phase, phase_done, phase_total, error_code, error_detail,
                created_at, completed_at, expires_at, streamable_through, repair_since
           FROM snapshots
         """;
@@ -117,8 +117,8 @@ public sealed class SnapshotStore
                 command.Transaction = transaction;
                 command.CommandText =
                     """
-                    INSERT INTO snapshot_rows (generation, ordinal, kind, entity_type, entity_id, payload, checksum, group_key)
-                    VALUES ($generation, $ordinal, $kind, $entityType, $entityId, $payload, $checksum, $groupKey);
+                    INSERT INTO snapshot_rows (generation, ordinal, kind, entity_type, entity_id, payload, group_key)
+                    VALUES ($generation, $ordinal, $kind, $entityType, $entityId, $payload, $groupKey);
                     """;
 
                 var generationParameter = command.Parameters.Add("$generation", SqliteType.Integer);
@@ -127,7 +127,6 @@ public sealed class SnapshotStore
                 var entityType = command.Parameters.Add("$entityType", SqliteType.Text);
                 var entityId = command.Parameters.Add("$entityId", SqliteType.Text);
                 var payload = command.Parameters.Add("$payload", SqliteType.Blob);
-                var checksum = command.Parameters.Add("$checksum", SqliteType.Text);
                 var groupKey = command.Parameters.Add("$groupKey", SqliteType.Text);
 
                 generationParameter.Value = generation;
@@ -140,7 +139,6 @@ public sealed class SnapshotStore
                     entityType.Value = (object?)row.EntityType ?? DBNull.Value;
                     entityId.Value = row.EntityId;
                     payload.Value = row.Payload;
-                    checksum.Value = (object?)row.Checksum ?? DBNull.Value;
                     groupKey.Value = (object?)row.GroupKey ?? DBNull.Value;
                     command.ExecuteNonQuery();
                 }
@@ -183,7 +181,6 @@ public sealed class SnapshotStore
     /// <param name="generation">Target snapshot.</param>
     /// <param name="rowCount">Total rows written.</param>
     /// <param name="byteCount">Total payload bytes.</param>
-    /// <param name="checksum">Digest over all rows in order.</param>
     /// <param name="expiresAt">When the snapshot may be reclaimed.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task that completes once the snapshot is marked complete.</returns>
@@ -191,7 +188,6 @@ public sealed class SnapshotStore
         long generation,
         long rowCount,
         long byteCount,
-        string checksum,
         DateTimeOffset expiresAt,
         CancellationToken cancellationToken = default) =>
         _database.WriteAsync(
@@ -201,13 +197,12 @@ public sealed class SnapshotStore
                 """
                 UPDATE snapshots
                    SET state = 'complete', row_count = $rows, byte_count = $bytes,
-                       checksum = $checksum, completed_at = $now, expires_at = $expires,
+                       completed_at = $now, expires_at = $expires,
                        phase = NULL, error_code = NULL, error_detail = NULL
                  WHERE generation = $generation AND state = 'building';
                 """,
                 ("$rows", rowCount),
                 ("$bytes", byteCount),
-                ("$checksum", checksum),
                 ("$now", Now()),
                 ("$expires", expiresAt.ToUnixTimeMilliseconds()),
                 ("$generation", generation)),
@@ -425,6 +420,26 @@ public sealed class SnapshotStore
             cancellationToken);
 
     /// <summary>
+    /// Totals the payload bytes a snapshot holds.
+    /// </summary>
+    /// <remarks>
+    /// One aggregate rather than reading every row back. The build used to re-read the entire
+    /// finished snapshot to hash it, and took the byte total from that pass; with the hashing gone
+    /// there is no reason to move 16 MB through memory to add up its lengths.
+    /// </remarks>
+    /// <param name="generation">Target snapshot.</param>
+    /// <returns>Total payload bytes.</returns>
+    public long PayloadBytes(long generation)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM snapshot_rows WHERE generation = $generation;";
+        command.Parameters.AddWithValue("$generation", generation);
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// Reads rows for delivery.
     /// </summary>
     /// <remarks>
@@ -438,7 +453,7 @@ public sealed class SnapshotStore
     /// <param name="maxPayloadBytes">Approximate payload budget.</param>
     /// <param name="throughOrdinal">
     /// Inclusive upper bound — the delivery watermark. Defaults to unbounded, which is correct for
-    /// callers that own the build (checksumming, retention) and wrong for delivery, which must never
+    /// callers that own the build (retention, verification) and wrong for delivery, which must never
     /// hand out a row above the watermark.
     /// </param>
     /// <returns>Rows in ascending ordinal order.</returns>
@@ -456,7 +471,7 @@ public sealed class SnapshotStore
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT ordinal, kind, entity_type, entity_id, payload, checksum, group_key
+            SELECT ordinal, kind, entity_type, entity_id, payload, group_key
               FROM snapshot_rows
              WHERE generation = $generation AND ordinal > $after AND ordinal <= $through
              ORDER BY ordinal
@@ -478,8 +493,7 @@ public sealed class SnapshotStore
                 reader.IsDBNull(2) ? null : reader.GetString(2),
                 reader.GetString(3),
                 payload,
-                reader.IsDBNull(5) ? null : reader.GetString(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6)));
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
 
             bytes += payload.Length;
             if (bytes >= maxPayloadBytes)
@@ -505,16 +519,15 @@ public sealed class SnapshotStore
         WireSchema = reader.GetInt32(4),
         RowCount = reader.GetInt64(5),
         ByteCount = reader.GetInt64(6),
-        Checksum = reader.IsDBNull(7) ? null : reader.GetString(7),
-        Phase = reader.IsDBNull(8) ? null : reader.GetString(8),
-        PhaseDone = reader.GetInt64(9),
-        PhaseTotal = reader.GetInt64(10),
-        ErrorCode = reader.IsDBNull(11) ? null : reader.GetString(11),
-        ErrorDetail = reader.IsDBNull(12) ? null : reader.GetString(12),
-        CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
-        CompletedAt = ToOffset(reader.GetValue(14)),
-        ExpiresAt = ToOffset(reader.GetValue(15)),
-        StreamableThrough = reader.GetInt64(16),
-        RepairSince = ToOffset(reader.GetValue(17))
+        Phase = reader.IsDBNull(7) ? null : reader.GetString(7),
+        PhaseDone = reader.GetInt64(8),
+        PhaseTotal = reader.GetInt64(9),
+        ErrorCode = reader.IsDBNull(10) ? null : reader.GetString(10),
+        ErrorDetail = reader.IsDBNull(11) ? null : reader.GetString(11),
+        CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)),
+        CompletedAt = ToOffset(reader.GetValue(13)),
+        ExpiresAt = ToOffset(reader.GetValue(14)),
+        StreamableThrough = reader.GetInt64(15),
+        RepairSince = ToOffset(reader.GetValue(16))
     };
 }

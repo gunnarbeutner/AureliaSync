@@ -105,8 +105,8 @@ public sealed class JournalStore
                 command.CommandText =
                     """
                     INSERT INTO journal (scope, kind, entity_type, entity_id, wire_schema, payload,
-                                         checksum, created_at, group_key)
-                    VALUES ($scope, $kind, $entityType, $entityId, $schema, $payload, NULL, $now, $groupKey);
+                                         created_at, group_key)
+                    VALUES ($scope, $kind, $entityType, $entityId, $schema, $payload, $now, $groupKey);
                     """;
 
                 var scope = command.Parameters.Add("$scope", SqliteType.Text);
@@ -193,7 +193,6 @@ public sealed class JournalStore
                 reader.IsDBNull(2) ? null : reader.GetString(2),
                 reader.GetString(3),
                 payload,
-                null,
                 reader.IsDBNull(5) ? null : reader.GetString(5)));
 
             bytes += payload.Length;

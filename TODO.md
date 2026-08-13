@@ -53,6 +53,22 @@ adversarially provoked.
 
 ---
 
+## Removed in 1.2.3
+
+### Both digests are gone
+
+Neither justified its cost. The segment digest could only detect corruption between hashing and
+verification — a window already covered by the `segment.end` framing, gzip's CRC and TLS — and was
+structurally incapable of catching a server-side error, having been computed from the same bytes it
+would have had to disprove. The snapshot digest was worse: producing it re-read every row of the
+finished snapshot on every build, and no code path ever read the result.
+
+What was actually lost is worth stating plainly: the snapshot digest was the oracle that proved
+`FastHydration` byte-neutral, and that was genuinely valuable. Nothing now catches a regression of
+that kind automatically. Re-establishing the check means hashing two builds by hand.
+
+`M006DropChecksums` drops the three columns. The per-record one was never populated at all.
+
 ## Introduced in 1.2.0
 
 ### Where the build time actually goes — measured, not guessed
@@ -77,12 +93,13 @@ dto.Genres = string.IsNullOrWhiteSpace(entity.Genres) ? [] : entity.Genres.Split
 ```
 
 `InternalItemsQuery.SkipDeserialization` turns it off. Two consecutive builds of the same library,
-no restart between them, produced **the same aggregate checksum over all 43,343 records** — so the
-payloads are byte-identical, proven rather than argued — at **89 s with it against 123 s without**.
+no restart between them, produced **the same digest over all 43,343 records** — so the payloads are
+byte-identical, proven rather than argued — at **89 s with it against 123 s without**.
 
 Shipped as `FastHydration`, on by default. It stays a switch because the guarantee depends on
 Jellyfin's internals: if a release ever moves a field out of the columns into the blob alone, this
-is the way back, and the snapshot checksum is how it would be caught.
+is the way back. The digest that proved it has since been removed, so such a regression would not be
+caught automatically — see *Both digests are gone* above.
 
 ### Build time is noisy and the earlier comparison was worthless
 

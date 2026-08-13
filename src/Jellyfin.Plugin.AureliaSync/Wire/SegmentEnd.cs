@@ -49,10 +49,6 @@ public class SegmentEnd
     [JsonPropertyName("sessionUpperBound")]
     public long SessionUpperBound { get; set; }
 
-    /// <summary>Gets or sets a digest over the segment's payload bytes.</summary>
-    [JsonPropertyName("aggregateChecksum")]
-    public string? AggregateChecksum { get; set; }
-
     /// <summary>
     /// Gets or sets why the segment ended: <c>maxRecords</c>, <c>maxBytes</c>, <c>timeBudget</c>,
     /// <c>upperBound</c>, or <c>clientAbort</c>.

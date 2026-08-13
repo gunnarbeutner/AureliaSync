@@ -23,12 +23,11 @@ public class NdjsonFramingTests
             groupKey is null ? WireKind.ItemUpsert : WireKind.PlaylistReplace,
             groupKey is null ? WireEntityType.Track : null,
             ordinal.ToString("x8", System.Globalization.CultureInfo.InvariantCulture),
-            // The ordinal is in the payload so that two rows are never byte-identical; a digest
-            // test against interchangeable payloads would pass no matter what the writer did.
+            // The ordinal is in the payload so that two rows are never byte-identical, which keeps
+            // ordering and cursor assertions honest.
             Encoding.UTF8.GetBytes(
                 "{\"id\":" + ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ",\"pad\":\"" + new string('x', Math.Max(1, payloadSize)) + "\"}"),
-            null,
             groupKey);
 
     private static SegmentBegin Begin() => new SegmentBegin
@@ -112,7 +111,7 @@ public class NdjsonFramingTests
     public async Task PayloadsArePassedThroughUnchanged()
     {
         var payload = Encoding.UTF8.GetBytes("{\"id\":\"abc\",\"name\":\"Björk\",\"n\":1.5}");
-        var row = new SnapshotRow(1, WireKind.ItemUpsert, "track", "abc", payload, null);
+        var row = new SnapshotRow(1, WireKind.ItemUpsert, "track", "abc", payload);
 
         var (text, _) = await WriteAsync(new[] { row });
         var record = Parse(text).First(d => Kind(d) == WireKind.ItemUpsert);
@@ -267,46 +266,16 @@ public class NdjsonFramingTests
     }
 
     [Fact]
-    public async Task TheClosingLineCarriesADigestOverTheDeliveredPayloads()
+    public async Task TheClosingLineAdvertisesNoDigest()
     {
-        // The protocol's only end-to-end integrity check, and the acknowledgement echoes it back.
+        // Digests were removed because they could only detect corruption between hashing and
+        // verification — a window the segment framing, gzip's CRC and TLS already cover — while
+        // being unable to detect a server-side mistake at all, having been computed from the same
+        // bytes. This asserts the field is gone rather than merely unused.
         var (text, _) = await WriteAsync(new[] { Row(1), Row(2) }, upperBound: 2);
-        var checksum = Parse(text)[^1].RootElement.GetProperty("aggregateChecksum").GetString()!;
+        var end = Parse(text)[^1].RootElement;
 
-        Assert.StartsWith("sha256:", checksum, StringComparison.Ordinal);
-        Assert.Equal(7 + 64, checksum.Length);
-
-        // Independently computed over exactly the payload bytes, in delivery order.
-        using var sha = System.Security.Cryptography.SHA256.Create();
-        var expected = sha.ComputeHash(
-            Row(1).Payload.Concat(Row(2).Payload).ToArray());
-        Assert.Equal("sha256:" + Convert.ToHexStringLower(expected), checksum);
-    }
-
-    [Fact]
-    public async Task TheDigestChangesWhenTheDeliveredRecordsChange()
-    {
-        var (a, _) = await WriteAsync(new[] { Row(1), Row(2) }, upperBound: 2);
-        var (b, _) = await WriteAsync(new[] { Row(2), Row(1) }, upperBound: 2);
-        var (c, _) = await WriteAsync(new[] { Row(1) }, upperBound: 2);
-
-        string Digest(string t) => Parse(t)[^1].RootElement.GetProperty("aggregateChecksum").GetString()!;
-
-        // Order matters, and so does content: a digest that ignored either would be worthless.
-        Assert.NotEqual(Digest(a), Digest(b));
-        Assert.NotEqual(Digest(a), Digest(c));
-    }
-
-    [Fact]
-    public async Task AnEmptySegmentStillCarriesAWellFormedDigest()
-    {
-        var (text, _) = await WriteAsync(Array.Empty<SnapshotRow>(), afterOrdinal: 5, ready: false);
-        var checksum = Parse(text)[^1].RootElement.GetProperty("aggregateChecksum").GetString()!;
-
-        // The digest of nothing, not a missing field — the client echoes it back either way.
-        Assert.Equal(
-            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            checksum);
+        Assert.False(end.TryGetProperty("aggregateChecksum", out _));
     }
 
     [Fact]

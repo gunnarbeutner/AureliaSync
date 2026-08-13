@@ -42,9 +42,6 @@ public static class SyncErrorCode
     /// <summary>The acknowledgement skipped a required protocol phase.</summary>
     public const string AckPhaseMismatch = "ackPhaseMismatch";
 
-    /// <summary>The acknowledged range did not match its checksum. The checkpoint did not move.</summary>
-    public const string AckChecksumMismatch = "ackChecksumMismatch";
-
     /// <summary>Reconciliation must complete before delivery can continue.</summary>
     public const string ReconciliationRequired = "reconciliationRequired";
 

@@ -42,9 +42,6 @@ public sealed record SnapshotInfo
     /// <summary>Gets the total payload size, once complete.</summary>
     public long ByteCount { get; init; }
 
-    /// <summary>Gets the digest over all rows in order, once complete.</summary>
-    public string? Checksum { get; init; }
-
     /// <summary>Gets the phase currently being materialised.</summary>
     public string? Phase { get; init; }
 

@@ -13,7 +13,6 @@ namespace Jellyfin.Plugin.AureliaSync.Storage;
 /// <param name="EntityType">Entity type for item upserts, otherwise null.</param>
 /// <param name="EntityId">The entity this record describes.</param>
 /// <param name="Payload">Wire-ready JSON bytes.</param>
-/// <param name="Checksum">Optional per-row digest.</param>
 /// <param name="GroupKey">
 /// Rows sharing a non-null key must be delivered in the same segment. Used for playlist
 /// membership, which the client applies by clearing and reinserting.
@@ -30,5 +29,4 @@ public sealed record SnapshotRow(
     string? EntityType,
     string EntityId,
     byte[] Payload,
-    string? Checksum,
     string? GroupKey = null);

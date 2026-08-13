@@ -58,8 +58,9 @@ public sealed class LibraryEnumerator
     /// </summary>
     /// <remarks>
     /// By the 32-character hexadecimal form compared ordinally: collation-independent,
-    /// locale-independent, stable across Jellyfin versions, and reproducible in a test — which is
-    /// what lets two builds of an unchanged library produce an identical checksum.
+    /// locale-independent, stable across Jellyfin versions, and reproducible in a test — so two
+    /// builds of an unchanged library produce byte-identical output, which is what makes comparing
+    /// them a usable way to check a change was neutral.
     /// </remarks>
     /// <param name="ids">Identifiers to order.</param>
     /// <returns>The identifiers in protocol order.</returns>

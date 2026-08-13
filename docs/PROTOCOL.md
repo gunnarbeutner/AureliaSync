@@ -153,7 +153,7 @@ that no longer exists is **not an error** — see §6.2.
 
 `protocolNotSupported`, `schemaNotSupported`, `sessionExpired`, `sessionNotOwned`,
 `checkpointExpired`, `journalGap`, `snapshotInvalidated`, `cursorInvalid`, `ackBeyondIssued`,
-`ackPhaseMismatch`, `ackChecksumMismatch`, `serverBusy`, `storagePressure`, `storageUnavailable`,
+`ackPhaseMismatch`, `serverBusy`, `storagePressure`, `storageUnavailable`,
 `starting`, `disabled`, `userScopeRequired`, `badRequest`.
 
 No error ever instructs the client to discard its current library. Even with
@@ -261,8 +261,7 @@ error — see §6.1.
 {
   "throughCursor": "MXxzfDE3fDQyMDA",
   "clientCommitId": "0f1c…",
-  "recordCount": 437,
-  "aggregateChecksum": "sha256:…"
+  "recordCount": 437
 }
 ```
 
@@ -415,7 +414,7 @@ decoding failure that aborts the client's sync.
 ### 7.3 `segment.end` — exactly once, last
 
 ```json
-{"kind":"segment.end","cursor":"MXxzfDE3fDQyMDE","recordCount":1000,"byteCount":412887,"caughtUp":false,"sessionUpperBound":34512,"aggregateChecksum":"sha256:…","stopReason":"maxRecords","nextAfter":"MXxzfDE3fDQyMDE"}
+{"kind":"segment.end","cursor":"MXxzfDE3fDQyMDE","recordCount":1000,"byteCount":412887,"caughtUp":false,"sessionUpperBound":34512,"stopReason":"maxRecords","nextAfter":"MXxzfDE3fDQyMDE"}
 ```
 
 `stopReason` ∈ `maxRecords` | `maxBytes` | `timeBudget` | `upperBound` | `clientAbort`.

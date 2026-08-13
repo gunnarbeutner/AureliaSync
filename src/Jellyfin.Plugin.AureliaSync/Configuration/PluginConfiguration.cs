@@ -86,13 +86,6 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool EnableGzip { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets the default checksum mode: <c>none</c>, <c>segment</c>, or <c>record</c>.
-    /// Per-record checksums cost roughly 20% of the wire size and are redundant over TLS plus a
-    /// segment digest, so <c>segment</c> is the default.
-    /// </summary>
-    public string DefaultChecksumMode { get; set; } = "segment";
-
-    /// <summary>
     /// Gets or sets how long a stream request waits for a snapshot that is still being built,
     /// in seconds, before answering with a valid but empty segment.
     /// </summary>
@@ -134,14 +127,15 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </para>
     /// <para>
     /// Every field this plugin reads is written by <c>Map</c> from columns, artist and genre credits
-    /// included, so skipping the parse produces byte-identical payloads. That is measured, not
-    /// assumed: two consecutive builds of the same library, one with this on and one with it off,
-    /// produced the same aggregate checksum over all 43,343 records — 89s against 123s.
+    /// included, so skipping the parse produces byte-identical payloads. That was measured rather
+    /// than assumed: two consecutive builds of the same library, one with this on and one with it
+    /// off, produced identical digests over all 43,343 records — 89s against 123s.
     /// </para>
     /// <para>
     /// It remains a switch because the guarantee rests on Jellyfin's internals. If a future release
-    /// moves a field out of the columns and into the blob alone, this is the way back, and the
-    /// snapshot checksum is how such a regression would be caught.
+    /// moves a field out of the columns into the blob alone, this is the way back. Note that the
+    /// digest which proved the equivalence has since been removed, so nothing would now catch such a
+    /// regression automatically; re-establishing it means comparing two builds by hand.
     /// </para>
     /// </remarks>
     public bool FastHydration { get; set; } = true;

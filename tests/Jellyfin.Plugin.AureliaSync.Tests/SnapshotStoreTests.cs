@@ -185,12 +185,12 @@ public sealed class SnapshotStoreTests : IDisposable
     {
         var generation = await _store.CreateAsync(UserA, 1, 0);
         await _store.AppendAsync(generation, new[] { Row(1) });
-        await _store.CompleteAsync(generation, 1, 42, "sha256:abc", DateTimeOffset.UtcNow.AddHours(48));
+        await _store.CompleteAsync(generation, 1, 42, DateTimeOffset.UtcNow.AddHours(48));
 
         var info = _store.Get(generation)!;
         Assert.True(info.IsComplete);
         Assert.Equal(1, info.RowCount);
-        Assert.Equal("sha256:abc", info.Checksum);
+        Assert.Equal(42, info.ByteCount);
         Assert.NotNull(info.CompletedAt);
         Assert.NotNull(info.ExpiresAt);
     }
@@ -205,7 +205,7 @@ public sealed class SnapshotStoreTests : IDisposable
 
         var finished = await _store.CreateAsync(UserB, 1, 0);
         await _store.AppendAsync(finished, new[] { Row(1) });
-        await _store.CompleteAsync(finished, 1, 10, "sha256:x", DateTimeOffset.UtcNow.AddHours(48));
+        await _store.CompleteAsync(finished, 1, 10, DateTimeOffset.UtcNow.AddHours(48));
 
         var count = await _store.InvalidateInterruptedBuildsAsync();
 
@@ -235,7 +235,7 @@ public sealed class SnapshotStoreTests : IDisposable
     {
         // This is what makes a second device cheap: it joins the snapshot the first already paid for.
         var generation = await _store.CreateAsync(UserA, 1, 0);
-        await _store.CompleteAsync(generation, 1, 1, "sha256:x", DateTimeOffset.UtcNow.AddHours(48));
+        await _store.CompleteAsync(generation, 1, 1, DateTimeOffset.UtcNow.AddHours(48));
 
         var window = DateTimeOffset.UtcNow.AddMinutes(-360);
         Assert.Equal(generation, _store.FindReusable(UserA, 1, window)!.Generation);
@@ -303,7 +303,7 @@ public sealed class SnapshotStoreTests : IDisposable
         }
 
         var written = stopwatch.Elapsed;
-        await _store.CompleteAsync(generation, Total, 0, "sha256:x", DateTimeOffset.UtcNow.AddHours(48));
+        await _store.CompleteAsync(generation, Total, 0, DateTimeOffset.UtcNow.AddHours(48));
 
         stopwatch.Restart();
         long cursor = 0;

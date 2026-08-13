@@ -27,7 +27,14 @@ public class AckRequest
     [JsonPropertyName("recordCount")]
     public int RecordCount { get; set; }
 
-    /// <summary>Gets or sets the digest the server reported for the segment, echoed back.</summary>
+    /// <summary>
+    /// Gets or sets a field kept only so an older client's acknowledgement still deserialises.
+    /// </summary>
+    /// <remarks>
+    /// The server stopped emitting and stopped reading segment digests. Accepting the property and
+    /// ignoring it means a client that still echoes one is not rejected for it.
+    /// </remarks>
     [JsonPropertyName("aggregateChecksum")]
+    [System.Obsolete("Segment digests were removed from the protocol; this is tolerated, never read.")]
     public string? AggregateChecksum { get; set; }
 }

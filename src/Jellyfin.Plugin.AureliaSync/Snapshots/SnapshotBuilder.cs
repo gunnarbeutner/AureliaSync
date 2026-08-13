@@ -405,9 +405,9 @@ public sealed class SnapshotBuilder
             .ConfigureAwait(false);
 
         // ---- Seal it. ----
-        var (checksum, bytes) = ComputeChecksum(generation);
+        var bytes = _store.PayloadBytes(generation);
         var expiresAt = DateTimeOffset.UtcNow.AddHours(Math.Max(1, configuration.SnapshotRetentionHours));
-        await _store.CompleteAsync(generation, written, bytes, checksum, expiresAt, cancellationToken)
+        await _store.CompleteAsync(generation, written, bytes, expiresAt, cancellationToken)
             .ConfigureAwait(false);
 
         _logger.LogInformation(
@@ -433,47 +433,13 @@ public sealed class SnapshotBuilder
         long ordinal, string kind, string? entityType, string entityId, T payload, string? groupKey = null)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, WireSchema.JsonOptions);
-        return new SnapshotRow(ordinal, kind, entityType, entityId, bytes, null, groupKey);
+        return new SnapshotRow(ordinal, kind, entityType, entityId, bytes, groupKey);
     }
 
     private static Task ThrottleAsync(PluginConfiguration configuration, CancellationToken cancellationToken) =>
         configuration.SnapshotBatchDelayMs > 0
             ? Task.Delay(configuration.SnapshotBatchDelayMs, cancellationToken)
             : Task.CompletedTask;
-
-    /// <summary>
-    /// Hashes the snapshot's payloads in ordinal order.
-    /// </summary>
-    /// <remarks>
-    /// Computed by reading back what was actually stored rather than by accumulating during the
-    /// build, both because rows are written out of ordinal order and because this way the checksum
-    /// describes the snapshot on disk rather than the intent that produced it.
-    /// </remarks>
-    private (string Checksum, long Bytes) ComputeChecksum(long generation)
-    {
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        long ordinal = 0;
-        long bytes = 0;
-
-        while (true)
-        {
-            var page = _store.ReadAfter(generation, ordinal, 2_000, long.MaxValue);
-            if (page.Count == 0)
-            {
-                break;
-            }
-
-            foreach (var row in page)
-            {
-                hash.AppendData(row.Payload);
-                bytes += row.Payload.Length;
-            }
-
-            ordinal = page[^1].Ordinal;
-        }
-
-        return ("sha256:" + Convert.ToHexStringLower(hash.GetHashAndReset()), bytes);
-    }
 
     /// <summary>
     /// The ordinal range reserved for each phase.

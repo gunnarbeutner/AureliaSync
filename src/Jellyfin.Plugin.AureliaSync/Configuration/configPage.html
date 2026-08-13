@@ -97,28 +97,6 @@
                     </div>
                 </div>
 
-                <div class="inputContainer">
-                    <input id="MaxSnapshotBuildsPerUserPerHour" name="MaxSnapshotBuildsPerUserPerHour" type="number"
-                           is="emby-input" min="1" max="48" step="1" label="Max snapshot rebuilds per user per hour" />
-                    <div class="fieldDescription">
-                        Limits how often the library may be crawled from scratch. Ordinary syncing is
-                        never rate limited — only rebuilding is.
-                    </div>
-                </div>
-
-                <div class="selectContainer">
-                    <select is="emby-select" id="DefaultChecksumMode" name="DefaultChecksumMode"
-                            label="Default checksum mode">
-                        <option value="none">none</option>
-                        <option value="segment">segment</option>
-                        <option value="record">record</option>
-                    </select>
-                    <div class="fieldDescription">
-                        Per-record checksums add roughly 20% to the wire size and are largely
-                        redundant over TLS plus a per-segment digest.
-                    </div>
-                </div>
-
                 <div class="checkboxContainer checkboxContainer-withDescription">
                     <label class="emby-checkbox-label">
                         <input id="EnableGzip" name="EnableGzip" type="checkbox" is="emby-checkbox" />
@@ -227,8 +205,7 @@
                 'MaxRecordsPerSegment', 'MaxBytesPerSegment', 'SegmentTimeBudgetMs',
                 'SnapshotHydrationBatchSize', 'SnapshotBatchDelayMs', 'SnapshotReuseWindowMinutes',
                 'StreamWaitSeconds', 'MaxSnapshotBuildsPerUserPerHour', 'MaxConcurrentSnapshotBuilds',
-                'StoragePressureMegabytes',
-                'DefaultChecksumMode'
+                'StoragePressureMegabytes'
             ];
             var checkboxFields = [
                 'Enabled', 'EnableGzip', 'AudioPlaylistsOnly', 'VerboseDiagnostics',

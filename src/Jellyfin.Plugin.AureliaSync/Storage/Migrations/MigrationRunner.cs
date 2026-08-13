@@ -63,7 +63,8 @@ public sealed class MigrationRunner
             new M002SnapshotRowGroups(),
             new M003JournalGroups(),
             new M004SessionCounters(),
-            new M005ProgressiveDelivery()
+            new M005ProgressiveDelivery(),
+            new M006DropChecksums()
         });
 
     /// <summary>
