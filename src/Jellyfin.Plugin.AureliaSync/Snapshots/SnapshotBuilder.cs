@@ -45,7 +45,6 @@ namespace Jellyfin.Plugin.AureliaSync.Snapshots;
 /// </remarks>
 public sealed class SnapshotBuilder
 {
-    private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
     private readonly SnapshotStore _store;
     private readonly LibraryEnumerator _enumerator;
@@ -67,7 +66,6 @@ public sealed class SnapshotBuilder
         SnapshotStore store,
         ILogger logger)
     {
-        _libraryManager = libraryManager;
         _userManager = userManager;
         _store = store;
         _logger = logger;

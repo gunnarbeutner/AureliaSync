@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Jellyfin.Plugin.AureliaSync.Streaming;
@@ -48,6 +49,7 @@ internal static class FixtureBuilder
     /// </summary>
     private static string CompleteSnapshot()
     {
+        PayloadBytes.Clear();
         var lines = new List<string>();
         var ordinal = 0L;
 
@@ -199,6 +201,7 @@ internal static class FixtureBuilder
             ByteCount = 0,
             CaughtUp = true,
             SessionUpperBound = ordinal,
+            AggregateChecksum = Digest(),
             StopReason = "upperBound",
             NextAfter = Cursor.ForSnapshot(Generation, ordinal).Encode()
         }));
@@ -212,6 +215,7 @@ internal static class FixtureBuilder
     /// </summary>
     private static string PartialSegment()
     {
+        PayloadBytes.Clear();
         var after = Cursor.ForSnapshot(Generation, 4200).Encode();
         var cursor = Cursor.ForSnapshot(Generation, 4201).Encode();
 
@@ -238,6 +242,7 @@ internal static class FixtureBuilder
                 ByteCount = 0,
                 CaughtUp = false,
                 SessionUpperBound = 34512,
+                AggregateChecksum = Digest(),
                 StopReason = "maxRecords",
                 NextAfter = cursor
             })
@@ -252,6 +257,7 @@ internal static class FixtureBuilder
     /// </summary>
     private static string ErroredSegment()
     {
+        PayloadBytes.Clear();
         var cursor = Cursor.ForSnapshot(Generation, 4201).Encode();
 
         var lines = new List<string>
@@ -281,9 +287,18 @@ internal static class FixtureBuilder
         return string.Join('\n', lines) + "\n";
     }
 
+    /// <summary>
+    /// Payload bytes of the records emitted so far, in order, so a fixture can carry the same
+    /// aggregate digest the segment writer would produce for it.
+    /// </summary>
+    private static readonly List<byte[]> PayloadBytes = new List<byte[]>();
+
     private static string Record(
-        string cursor, long sequence, string kind, string? entityType, string entityId, object payload) =>
-        Serialize(new RecordEnvelope
+        string cursor, long sequence, string kind, string? entityType, string entityId, object payload)
+    {
+        PayloadBytes.Add(JsonSerializer.SerializeToUtf8Bytes(payload, WireSchema.JsonOptions));
+
+        return Serialize(new RecordEnvelope
         {
             Cursor = cursor,
             Sequence = sequence,
@@ -292,6 +307,19 @@ internal static class FixtureBuilder
             EntityId = entityId,
             Payload = payload
         });
+    }
+
+    private static string Digest()
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var bytes in PayloadBytes)
+        {
+            hash.AppendData(bytes);
+        }
+
+        PayloadBytes.Clear();
+        return "sha256:" + Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
 
     private static string Serialize<T>(T value) =>
         JsonSerializer.Serialize(value, WireSchema.JsonOptions);
