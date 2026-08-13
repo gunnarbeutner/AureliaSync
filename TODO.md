@@ -55,7 +55,43 @@ adversarially provoked.
 
 ## Introduced in 1.2.0
 
-### Snapshot build time may have regressed, and the measurements cannot settle it
+### Where the build time actually goes — measured, not guessed
+
+Reading Jellyfin's `BaseItemRepository` settled this. Per row it runs:
+
+```csharp
+if (TypeRequiresDeserialization(type) && baseItemEntity.Data is not null && !skipDeserialization)
+    dto = JsonSerializer.Deserialize(baseItemEntity.Data, type, JsonDefaults.Options) as BaseItemDto;
+...
+return Map(baseItemEntity, dto, appHost, logger);   // always runs, from columns
+```
+
+`TypeRequiresDeserialization` is false for types carrying `RequiresSourceSerialisation` —
+`MusicAlbum`, `MusicArtist` and `MusicGenre` all do. **`Audio` does not**, so tracks, and only
+tracks, paid a `JsonSerializer.Deserialize` each. On this library that is 30,224 parses whose result
+`Map` then overwrites from database columns, artist and genre credits included:
+
+```csharp
+hasArtists.Artists = entity.Artists?.Split('|', StringSplitOptions.RemoveEmptyEntries) ?? [];
+dto.Genres = string.IsNullOrWhiteSpace(entity.Genres) ? [] : entity.Genres.Split('|');
+```
+
+`InternalItemsQuery.SkipDeserialization` turns it off. Two consecutive builds of the same library,
+no restart between them, produced **the same aggregate checksum over all 43,343 records** — so the
+payloads are byte-identical, proven rather than argued — at **89 s with it against 123 s without**.
+
+Shipped as `FastHydration`, on by default. It stays a switch because the guarantee depends on
+Jellyfin's internals: if a release ever moves a field out of the columns into the blob alone, this
+is the way back, and the snapshot checksum is how it would be caught.
+
+### Build time is noisy and the earlier comparison was worthless
+
+Two builds with identical settings measured 123 s and 205 s. Any claim resting on a single pair of
+timings on this server is unsound, including the one this file previously made about progressive
+delivery causing a regression — that comparison did not survive the noise. Time a change by building
+back to back under the same conditions, as the hydration test above did, or not at all.
+
+### The superseded worry, kept because the reasoning was wrong in an instructive way
 
 Progressive delivery made the client-visible wait collapse — first record in 0.5 s instead of ~100 s,
 and no empty segments at all. But the *build* itself now measures 205 s clean, against 97–128 s for

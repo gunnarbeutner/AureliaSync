@@ -184,6 +184,11 @@ public sealed class LibraryEnumerator
         var query = new InternalItemsQuery(user)
         {
             ItemIds = ids.ToArray(),
+
+            // Jellyfin's Map step rewrites every field this plugin reads from database columns after
+            // the JSON blob has been parsed, so the parse is work whose result is then discarded.
+            // See FastHydration for why this is a switch rather than simply true.
+            SkipDeserialization = Plugin.Instance?.Configuration.FastHydration ?? false,
             DtoOptions = new DtoOptions(true)
             {
                 EnableImages = true,
