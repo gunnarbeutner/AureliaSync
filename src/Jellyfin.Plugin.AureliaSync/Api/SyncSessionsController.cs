@@ -179,6 +179,16 @@ public class SyncSessionsController : ControllerBase
                 .ConfigureAwait(false);
         }
 
+        // A client that already holds a fully acknowledged snapshot, and whose position is still
+        // covered by the journal, gets changes instead of the whole catalog again. Anything else
+        // falls back to a snapshot with a reason the client can log.
+        if (!request.Reset && await TryOpenChangeSessionAsync(
+                userId, request.ClientId, protocolVersion, schemaVersion, configuration, cancellationToken)
+                .ConfigureAwait(false) is { } changeSession)
+        {
+            return StatusCode(StatusCodes.Status201Created, changeSession);
+        }
+
         var snapshot = await _coordinator
             .EnsureSnapshotAsync(userId, schemaVersion, request.Reset, cancellationToken)
             .ConfigureAwait(false);
@@ -311,7 +321,9 @@ public class SyncSessionsController : ControllerBase
                 return Problem(StatusCodes.Status400BadRequest, SyncErrorCode.CursorInvalid, "Malformed cursor.");
             }
 
-            if (session.Generation is { } generation && cursor.Generation != generation)
+            var isChangeSession = string.Equals(session.Mode, "changes", StringComparison.Ordinal);
+
+            if (!isChangeSession && session.Generation is { } generation && cursor.Generation != generation)
             {
                 return Problem(
                     StatusCodes.Status409Conflict,
@@ -324,6 +336,14 @@ public class SyncSessionsController : ControllerBase
         }
 
         var configuration = Configuration();
+
+        if (string.Equals(session.Mode, "changes", StringComparison.Ordinal))
+        {
+            return await StreamChangesAsync(
+                session, afterOrdinal, after, maxRecords, maxBytes, configuration, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var snapshot = await WaitForSnapshotAsync(session, configuration, cancellationToken).ConfigureAwait(false);
 
         if (snapshot is { State: SnapshotInfo.StateFailed or SnapshotInfo.StateInvalidated })
@@ -555,6 +575,15 @@ public class SyncSessionsController : ControllerBase
                     retryable: true);
         }
 
+        // A change session's position is a journal sequence, and it is the subscription — not the
+        // session — that must remember it: the session is disposable, the position is not.
+        if (session is not null && string.Equals(session.Mode, "changes", StringComparison.Ordinal))
+        {
+            await _runtime.Sessions
+                .AdvanceJournalPositionAsync(userId, clientId, outcome.AckedOrdinal, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var token = CheckpointToken.Issue(
             _runtime.SigningKey, userId, clientId, cursor.Generation, outcome.AckedOrdinal);
 
@@ -634,6 +663,206 @@ public class SyncSessionsController : ControllerBase
             .ConfigureAwait(false);
 
         return NoContent();
+    }
+
+    /// <summary>
+    /// Streams one segment of journal records.
+    /// </summary>
+    /// <remarks>
+    /// Reuses the same segment writer as snapshot delivery; only the row source differs, which is
+    /// what keeps the two paths from diverging in framing, limits or grouping rules.
+    /// </remarks>
+    private async Task<IActionResult> StreamChangesAsync(
+        SessionInfo session,
+        long afterSequence,
+        string? after,
+        int? maxRecords,
+        long? maxBytes,
+        PluginConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var journal = _runtime.Journal;
+        var records = Math.Clamp(maxRecords ?? configuration.MaxRecordsPerSegment, 1, 5000);
+        var budget = Math.Clamp(maxBytes ?? configuration.MaxBytesPerSegment, 64 * 1024, 32L * 1024 * 1024);
+
+        var rows = journal.ReadAfter(session.UserId, afterSequence, session.UpperBound, records, budget);
+
+        // Catch-up is measured against what this user could actually be sent, not the global head:
+        // another user's records sit between these sequences and would otherwise leave the client
+        // waiting forever for records it can never receive.
+        var highestVisible = journal.HighestVisible(session.UserId, session.UpperBound);
+
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = WireSchema.NdjsonContentType;
+        Response.Headers["X-Accel-Buffering"] = "no";
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+        var gzip = configuration.EnableGzip && AcceptsGzip();
+        if (gzip)
+        {
+            Response.Headers.ContentEncoding = "gzip";
+            Response.Headers.Vary = "Accept-Encoding";
+        }
+
+        Stream output = Response.Body;
+        GZipStream? compressor = null;
+        if (gzip)
+        {
+            compressor = new GZipStream(Response.Body, CompressionLevel.Fastest, leaveOpen: true);
+            output = compressor;
+        }
+
+        try
+        {
+            var begin = new SegmentBegin
+            {
+                WireSchemaVersion = session.WireSchema,
+                ProtocolVersion = session.ProtocolVersion,
+                SessionId = session.Id,
+                Mode = session.Mode,
+                Generation = session.Generation,
+                AfterCursor = after,
+                ServerTime = DateTimeOffset.UtcNow
+            };
+
+            var expiresAt = DateTimeOffset.UtcNow.AddHours(Math.Max(1, configuration.SessionIdleExpiryHours));
+
+            await NdjsonSegmentWriter.WriteAsync(
+                output,
+                begin,
+                rows,
+                afterSequence,
+                highestVisible,
+                snapshotReady: true,
+                records,
+                (long)(budget * 0.94),
+                TimeSpan.FromMilliseconds(Math.Max(1000, configuration.SegmentTimeBudgetMs)),
+                issued => _runtime.Sessions.RecordIssuedAsync(session.Id, issued, expiresAt, CancellationToken.None),
+                cancellationToken,
+                sequence => new Cursor(Cursor.JournalKind, 0, sequence)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return new EmptyResult();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AureliaSync: failed while writing a change segment for {Session}", session.Id);
+
+            if (!Response.HasStarted)
+            {
+                throw;
+            }
+
+            await NdjsonSegmentWriter.WriteErrorAsync(
+                output,
+                new ErrorLine
+                {
+                    Code = SyncErrorCode.ServerBusy,
+                    Message = "The server stopped writing this segment.",
+                    CorrelationId = SyncErrorResponse.NewCorrelationId()
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (compressor is not null)
+            {
+                await compressor.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                await compressor.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        return new EmptyResult();
+    }
+
+    /// <summary>
+    /// Opens a change session, or returns null when the client must take a snapshot instead.
+    /// </summary>
+    /// <remarks>
+    /// The gap check is the important part. A client whose position has fallen below the journal
+    /// floor cannot simply resume from the floor: it would skip everything in between while
+    /// believing it was current. It takes a fresh snapshot instead, which is expensive and correct.
+    /// </remarks>
+    private async Task<SessionResponse?> TryOpenChangeSessionAsync(
+        Guid userId,
+        string clientId,
+        int protocolVersion,
+        int schemaVersion,
+        PluginConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var subscription = _runtime.Sessions.GetSubscription(userId, clientId);
+        if (subscription is null || !subscription.CanReceiveChanges)
+        {
+            return null;
+        }
+
+        var journal = _runtime.Journal;
+        var floor = journal.Floor();
+
+        // floor - 1 is still contiguous: the next record the client needs is the oldest retained.
+        if (floor > 0 && subscription.AckSequence < floor - 1)
+        {
+            await _runtime.Sessions
+                .ResetSubscriptionAsync(userId, clientId, SyncErrorCode.JournalGap, cancellationToken)
+                .ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "AureliaSync: client {Client} is at {Position} but the journal starts at {Floor}; a fresh snapshot is required",
+                clientId,
+                subscription.AckSequence,
+                floor);
+            return null;
+        }
+
+        // Fixed when the session opens, so records written while it drains do not move the finish
+        // line and prevent it ever catching up.
+        var head = journal.Head();
+
+        var session = new SessionInfo
+        {
+            Id = SessionStore.NewSessionId(),
+            UserId = userId,
+            ClientId = clientId,
+            Mode = "changes",
+            ProtocolVersion = protocolVersion,
+            WireSchema = schemaVersion,
+            Generation = subscription.SnapshotGeneration,
+            BaselineSequence = subscription.AckSequence,
+            UpperBound = head,
+            HighestIssuedOrdinal = subscription.AckSequence,
+            AckedOrdinal = subscription.AckSequence,
+            State = SessionInfo.StateStreaming,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastSeenAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(Math.Max(1, configuration.SessionIdleExpiryHours))
+        };
+
+        await _runtime.Sessions.CreateAsync(session, cancellationToken).ConfigureAwait(false);
+
+        _logger.LogInformation(
+            "AureliaSync: opened a change session for {Client} from sequence {From} to {To}",
+            clientId,
+            subscription.AckSequence,
+            head);
+
+        return new SessionResponse
+        {
+            SessionId = session.Id,
+            Mode = "changes",
+            ProtocolVersion = protocolVersion,
+            SchemaVersion = schemaVersion,
+            Cursor = subscription.AckSequence > 0
+                ? new Cursor(Cursor.JournalKind, 0, subscription.AckSequence).Encode()
+                : null,
+            CheckpointToken = CheckpointToken.Issue(
+                _runtime.SigningKey, userId, clientId, 0, subscription.AckSequence),
+            SnapshotGeneration = subscription.SnapshotGeneration?.ToString(CultureInfo.InvariantCulture),
+            JournalHead = head,
+            ExpiresAt = session.ExpiresAt,
+            State = session.State
+        };
     }
 
     /// <summary>

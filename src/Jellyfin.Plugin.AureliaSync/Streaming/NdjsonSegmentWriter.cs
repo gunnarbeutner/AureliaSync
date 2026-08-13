@@ -57,6 +57,10 @@ public sealed class NdjsonSegmentWriter
     /// dies during the final flush.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="cursorFor">
+    /// Builds the cursor for an ordinal. Defaults to a snapshot cursor; change sessions pass a
+    /// journal one, since the two address different sequences.
+    /// </param>
     /// <returns>What the segment contained.</returns>
     public static async Task<SegmentOutcome> WriteAsync(
         Stream output,
@@ -69,10 +73,15 @@ public sealed class NdjsonSegmentWriter
         long maxTotalBytes,
         TimeSpan timeBudget,
         Func<long, Task>? onIssued,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<long, Cursor>? cursorFor = null)
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(rows);
+
+        // Snapshot and journal positions are different sequences and must not be confused for one
+        // another; the caller decides which kind its ordinals are.
+        cursorFor ??= ordinal => Cursor.ForSnapshot(begin.Generation ?? 0, ordinal);
 
         var buffer = new ArrayBufferWriter<byte>(FlushThreshold * 2);
         var stopwatch = Stopwatch.StartNew();
@@ -128,7 +137,7 @@ public sealed class NdjsonSegmentWriter
                 }
             }
 
-            total += await WriteRecordAsync(output, buffer, row, begin.Generation ?? 0, cancellationToken)
+            total += await WriteRecordAsync(output, buffer, row, cursorFor, cancellationToken)
                 .ConfigureAwait(false);
             digest.AppendData(row.Payload);
             payloadBytes += row.Payload.Length;
@@ -145,7 +154,7 @@ public sealed class NdjsonSegmentWriter
             await onIssued(lastOrdinal).ConfigureAwait(false);
         }
 
-        var cursor = Cursor.ForSnapshot(begin.Generation ?? 0, lastOrdinal).Encode();
+        var cursor = cursorFor(lastOrdinal).Encode();
         var end = new SegmentEnd
         {
             Cursor = cursor,
@@ -186,7 +195,7 @@ public sealed class NdjsonSegmentWriter
         Stream output,
         ArrayBufferWriter<byte> buffer,
         SnapshotRow row,
-        long generation,
+        Func<long, Cursor> cursorFor,
         CancellationToken cancellationToken)
     {
         var before = buffer.WrittenCount;
@@ -194,7 +203,7 @@ public sealed class NdjsonSegmentWriter
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            writer.WriteString("cursor", Cursor.ForSnapshot(generation, row.Ordinal).Encode());
+            writer.WriteString("cursor", cursorFor(row.Ordinal).Encode());
             writer.WriteNumber("sequence", row.Ordinal);
             writer.WriteString("kind", row.Kind);
 

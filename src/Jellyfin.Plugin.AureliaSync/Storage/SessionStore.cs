@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Text;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Threading;
@@ -257,7 +258,11 @@ public sealed class SessionStore
                 }
 
                 // 3. The cursor must belong to this delivery.
-                if (session.Generation is { } sessionGeneration && sessionGeneration != generation)
+                // A change session's cursors address journal sequences and carry no generation, so
+                // the snapshot-generation check does not apply to them.
+                if (!string.Equals(session.Mode, "changes", StringComparison.Ordinal)
+                    && session.Generation is { } sessionGeneration
+                    && sessionGeneration != generation)
                 {
                     return new AckOutcome(AckResult.WrongGeneration, session.AckedOrdinal, false);
                 }
@@ -306,6 +311,97 @@ public sealed class SessionStore
             "SELECT COUNT(*) FROM subscriptions WHERE user_id = $user AND state = 'active' AND snapshot_acked = 1;";
         command.Parameters.AddWithValue("$user", userId.ToString("N"));
         return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Reads a client's durable position, or null when it has none.
+    /// </summary>
+    /// <param name="userId">The user.</param>
+    /// <param name="clientId">The client installation.</param>
+    /// <returns>Its subscription, or null.</returns>
+    public SubscriptionInfo? GetSubscription(Guid userId, string clientId)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT ack_sequence, snapshot_generation, snapshot_acked, state, reason
+              FROM subscriptions WHERE user_id = $user AND client_id = $client;
+            """;
+        command.Parameters.AddWithValue("$user", userId.ToString("N"));
+        command.Parameters.AddWithValue("$client", clientId);
+
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new SubscriptionInfo
+        {
+            AckSequence = reader.GetInt64(0),
+            SnapshotGeneration = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+            SnapshotAcked = reader.GetInt32(2) == 1,
+            State = reader.GetString(3),
+            Reason = reader.IsDBNull(4) ? null : reader.GetString(4)
+        };
+    }
+
+    /// <summary>
+    /// Advances a client's journal position after it acknowledges changes.
+    /// </summary>
+    /// <param name="userId">The user.</param>
+    /// <param name="clientId">The client installation.</param>
+    /// <param name="sequence">The acknowledged journal sequence.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once recorded.</returns>
+    public Task AdvanceJournalPositionAsync(
+        Guid userId, string clientId, long sequence, CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                UPDATE subscriptions
+                   SET ack_sequence = MAX(ack_sequence, $sequence), last_ack_at = $now, last_seen_at = $now
+                 WHERE user_id = $user AND client_id = $client;
+                """,
+                ("$sequence", sequence),
+                ("$now", Now()),
+                ("$user", userId.ToString("N")),
+                ("$client", clientId)),
+            cancellationToken);
+
+    /// <summary>
+    /// Returns the users who hold a completed checkpoint.
+    /// </summary>
+    /// <remarks>
+    /// Only these need journal records. A user without a checkpoint will take a snapshot the first
+    /// time they connect, so journalling changes for them writes rows nobody will ever read.
+    /// </remarks>
+    /// <returns>Identifiers of users with an active, snapshot-complete subscription.</returns>
+    public IReadOnlySet<Guid> ActiveSubscriberIds()
+    {
+        var ids = new HashSet<Guid>();
+
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT DISTINCT user_id FROM subscriptions
+             WHERE state = 'active' AND snapshot_acked = 1;
+            """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (Guid.TryParseExact(reader.GetString(0), "N", out var id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return ids;
     }
 
     /// <summary>

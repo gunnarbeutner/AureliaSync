@@ -1,3 +1,4 @@
+using Jellyfin.Plugin.AureliaSync.Journal;
 using Jellyfin.Plugin.AureliaSync.Snapshots;
 using Jellyfin.Plugin.AureliaSync.Storage;
 using MediaBrowser.Controller;
@@ -25,5 +26,16 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // controller and the hosted service share one instance rather than getting two.
         serviceCollection.AddSingleton<SnapshotCoordinator>();
         serviceCollection.AddHostedService(provider => provider.GetRequiredService<SnapshotCoordinator>());
+
+        serviceCollection.AddSingleton<JournalWriter>();
+        serviceCollection.AddHostedService(provider =>
+        {
+            var writer = provider.GetRequiredService<JournalWriter>();
+
+            // Handed over rather than constructor-injected: resolving IUserDataManager while the
+            // container is still being built pulls in a slice of Jellyfin's own service graph.
+            writer.Attach(provider.GetRequiredService<MediaBrowser.Controller.Library.IUserDataManager>());
+            return writer;
+        });
     }
 }

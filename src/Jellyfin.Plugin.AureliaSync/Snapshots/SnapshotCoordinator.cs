@@ -26,6 +26,15 @@ namespace Jellyfin.Plugin.AureliaSync.Snapshots;
 /// </remarks>
 public sealed class SnapshotCoordinator : IHostedService, IDisposable
 {
+    /// <summary>
+    /// How many journal records below the slowest client are kept anyway.
+    /// </summary>
+    /// <remarks>
+    /// A client that acknowledged a moment ago but has not yet reconnected should not be stranded
+    /// by a few seconds of timing, and journal records are small.
+    /// </remarks>
+    public const long JournalSafetyMargin = 500;
+
     /// <summary>How often maintenance runs.</summary>
     public static readonly TimeSpan MaintenanceInterval = TimeSpan.FromMinutes(5);
 
@@ -34,6 +43,15 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
 
     /// <summary>How long acknowledgement receipts are kept. They need only outlive client retries.</summary>
     public static readonly TimeSpan AckReceiptRetention = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// The age beyond which journal records are dropped regardless of who still wants them.
+    /// </summary>
+    /// <remarks>
+    /// The backstop against a journal growing forever because one client stopped returning. Any
+    /// client starved by it is marked as needing a fresh snapshot rather than silently skipped.
+    /// </remarks>
+    public static readonly TimeSpan JournalMaxAge = TimeSpan.FromDays(30);
 
     private readonly ILogger<SnapshotCoordinator> _logger;
     private readonly ILoggerFactory _loggerFactory;
@@ -443,5 +461,45 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
                 }
             },
             cancellationToken).ConfigureAwait(false);
+
+        await ReclaimJournalAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Trims the journal and marks anyone it left behind.
+    /// </summary>
+    /// <remarks>
+    /// The order matters. Records are reclaimed only up to the slowest active client, then the age
+    /// backstop runs, and only then are starved clients marked — so a client is never marked for a
+    /// gap that the same pass was about to avoid creating.
+    /// </remarks>
+    private async Task ReclaimJournalAsync(CancellationToken cancellationToken)
+    {
+        var journal = _runtime.Journal;
+
+        var reclaimed = await journal.ReclaimAsync(JournalSafetyMargin, cancellationToken).ConfigureAwait(false);
+        var aged = await journal
+            .TrimOlderThanAsync(DateTimeOffset.UtcNow - JournalMaxAge, cancellationToken)
+            .ConfigureAwait(false);
+
+        var starved = await journal.MarkStarvedSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+
+        if (reclaimed > 0 || aged > 0)
+        {
+            _logger.LogInformation(
+                "AureliaSync: reclaimed {Reclaimed} consumed and {Aged} aged journal record(s); head {Head}, floor {Floor}",
+                reclaimed,
+                aged,
+                journal.Head(),
+                journal.Floor());
+        }
+
+        if (starved > 0)
+        {
+            // Loud on purpose: each of these is a client about to pay for a full resynchronisation.
+            _logger.LogWarning(
+                "AureliaSync: {Count} client(s) fell behind the journal and now require a fresh snapshot",
+                starved);
+        }
     }
 }

@@ -263,7 +263,8 @@ public sealed class SnapshotBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var entries = ReadEntries(playlist, user, userId, albumIdSet, trackFactsById);
+            var entries = PlaylistMembershipReader.Read(
+                playlist, user, userId, _reader, albumIdSet, trackFactsById);
 
             // Every entry for a playlist goes out in one batch and, later, one segment: the client
             // clears the playlist's membership and reinserts only what the segment contains.
@@ -315,45 +316,6 @@ public sealed class SnapshotBuilder
             DateTimeOffset.UtcNow - started);
 
         return written;
-    }
-
-    /// <summary>
-    /// Reads a playlist's visible audio membership, deduplicated and densely renumbered.
-    /// </summary>
-    /// <remarks>
-    /// Duplicates are dropped keeping the first occurrence: the client's membership table is keyed
-    /// on (playlist, item), so a repeat would collapse there anyway and leave the stated track
-    /// count unreachable.
-    /// </remarks>
-    private List<(ItemFacts Facts, string? EntryId, int Position)> ReadEntries(
-        MediaBrowser.Controller.Playlists.Playlist playlist,
-        Jellyfin.Database.Implementations.Entities.User user,
-        Guid userId,
-        IReadOnlySet<Guid> albumIds,
-        Dictionary<Guid, ItemFacts> knownTracks)
-    {
-        var entries = new List<(ItemFacts, string?, int)>();
-        var seen = new HashSet<Guid>();
-
-        foreach (var (link, item) in playlist.GetManageableItems())
-        {
-            if (item is not Audio || !item.IsVisible(user, false) || !seen.Add(item.Id))
-            {
-                continue;
-            }
-
-            // Matches what Jellyfin's own playlist endpoint reports, which is the item's identifier
-            // rather than a per-entry handle — Jellyfin has no stable per-entry identity here.
-            var entryId = link.ItemId?.ToString("N", CultureInfo.InvariantCulture);
-
-            var facts = knownTracks.TryGetValue(item.Id, out var known)
-                ? known
-                : _reader.Read(item, userId, albumIds);
-
-            entries.Add((facts, entryId, entries.Count));
-        }
-
-        return entries;
     }
 
     private static void Collect(PayloadProjector projector, ItemFacts facts, List<UserDataPayload> sink)
