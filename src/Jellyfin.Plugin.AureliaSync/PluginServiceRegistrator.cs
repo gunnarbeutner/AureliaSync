@@ -37,5 +37,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             writer.Attach(provider.GetRequiredService<MediaBrowser.Controller.Library.IUserDataManager>());
             return writer;
         });
+
+        // Reconciliation is the recovery path for changes events never reported, so it is a
+        // first-class scheduled task an administrator can see and trigger rather than a hidden timer.
+        serviceCollection.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, ReconciliationTask>();
     }
 }
