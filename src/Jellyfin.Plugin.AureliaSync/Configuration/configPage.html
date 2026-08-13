@@ -86,6 +86,15 @@
                 </div>
 
                 <div class="inputContainer">
+                    <input id="StoragePressureMegabytes" name="StoragePressureMegabytes" type="number"
+                           is="emby-input" min="0" max="102400" step="64" label="Stop building snapshots above (MB)" />
+                    <div class="fieldDescription">
+                        Zero disables the check. Only new snapshot builds are refused; clients already
+                        syncing keep working and can still acknowledge what they have committed.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
                     <input id="MaxSnapshotBuildsPerUserPerHour" name="MaxSnapshotBuildsPerUserPerHour" type="number"
                            is="emby-input" min="1" max="48" step="1" label="Max snapshot rebuilds per user per hour" />
                     <div class="fieldDescription">
@@ -191,6 +200,7 @@
                 'MaxRecordsPerSegment', 'MaxBytesPerSegment', 'SegmentTimeBudgetMs',
                 'SnapshotHydrationBatchSize', 'SnapshotBatchDelayMs', 'SnapshotReuseWindowMinutes',
                 'StreamWaitSeconds', 'MaxSnapshotBuildsPerUserPerHour', 'MaxConcurrentSnapshotBuilds',
+                'StoragePressureMegabytes',
                 'DefaultChecksumMode'
             ];
             var checkboxFields = ['Enabled', 'EnableGzip', 'AudioPlaylistsOnly', 'VerboseDiagnostics'];

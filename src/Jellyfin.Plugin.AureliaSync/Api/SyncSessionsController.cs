@@ -184,16 +184,33 @@ public class SyncSessionsController : ControllerBase
         // Only a build is rate limited, and only when one would actually happen. A client that can
         // reuse a snapshot, or that is asking for changes, is never held up — opening a session is
         // not the expensive operation and treating it as one blocks ordinary client behaviour.
-        if (_coordinator.WouldBuild(userId, schemaVersion, request.Reset)
-            && _runtime.Snapshots.BuildsSince(userId, DateTimeOffset.UtcNow.AddHours(-1))
-                >= Math.Max(1, configuration.MaxSnapshotBuildsPerUserPerHour))
+        if (_coordinator.WouldBuild(userId, schemaVersion, request.Reset))
         {
-            Response.Headers.RetryAfter = "600";
-            return Problem(
-                StatusCodes.Status429TooManyRequests,
-                SyncErrorCode.ServerBusy,
-                "This library has been rebuilt several times in the last hour. Try again shortly.",
-                retryable: true);
+            if (_runtime.Snapshots.BuildsSince(userId, DateTimeOffset.UtcNow.AddHours(-1))
+                >= Math.Max(1, configuration.MaxSnapshotBuildsPerUserPerHour))
+            {
+                Response.Headers.RetryAfter = "600";
+                return Problem(
+                    StatusCodes.Status429TooManyRequests,
+                    SyncErrorCode.ServerBusy,
+                    "This library has been rebuilt several times in the last hour. Try again shortly.",
+                    retryable: true);
+            }
+
+            // Under storage pressure a build is refused, but acknowledgements and delivery continue.
+            // A client that cannot start a new snapshot is merely delayed; one that cannot
+            // acknowledge has already committed the data and would be made to replay correct work.
+            var limit = (long)Math.Max(0, configuration.StoragePressureMegabytes) * 1024 * 1024;
+            if (limit > 0 && _runtime.Database.SizeOnDisk() > limit)
+            {
+                Response.Headers.RetryAfter = "3600";
+                return Problem(
+                    StatusCodes.Status507InsufficientStorage,
+                    SyncErrorCode.StoragePressure,
+                    "The plugin database has grown past its configured limit, so no new snapshot can "
+                    + "be built. Existing clients continue to sync.",
+                    retryable: true);
+            }
         }
 
         var snapshot = await _coordinator

@@ -122,6 +122,24 @@ public class PluginConfiguration : BasePluginConfiguration
     public int MaxSnapshotBuildsPerUserPerHour { get; set; } = 4;
 
     /// <summary>
+    /// Gets or sets the size, in megabytes, beyond which the plugin stops building new snapshots.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Zero disables the check. A snapshot of a 30,000-track library is roughly 12 MB, so the
+    /// default leaves room for several generations plus the journal before anything is refused.
+    /// </para>
+    /// <para>
+    /// Only <b>builds</b> are refused under pressure, never acknowledgements. Refusing a build costs
+    /// a client a delayed sync; refusing an acknowledgement costs it correctness, because the client
+    /// has already committed the data locally and would be forced to replay work it has done. Given
+    /// a choice between a client that waits and a client that is wrong, the plugin makes the client
+    /// wait.
+    /// </para>
+    /// </remarks>
+    public int StoragePressureMegabytes { get; set; } = 2048;
+
+    /// <summary>
     /// Gets or sets a value indicating whether verbose per-record diagnostics are logged.
     /// Never logs tokens or payload contents.
     /// </summary>

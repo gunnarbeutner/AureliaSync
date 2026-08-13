@@ -163,6 +163,38 @@ public sealed class SyncDatabase : IDisposable
     }
 
     /// <summary>
+    /// Returns the database's size on disk in bytes, including its write-ahead log.
+    /// </summary>
+    /// <remarks>
+    /// The write-ahead log is counted because during a build it can be as large as the snapshot
+    /// being written, which is exactly the moment the number matters.
+    /// </remarks>
+    /// <returns>Total bytes, or zero when the file cannot be read.</returns>
+    public long SizeOnDisk()
+    {
+        long total = 0;
+
+        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
+        {
+            try
+            {
+                var file = new FileInfo(DatabasePath + suffix);
+                if (file.Exists)
+                {
+                    total += file.Length;
+                }
+            }
+            catch (IOException)
+            {
+                // A size we cannot read must not be treated as "enormous"; that would refuse builds
+                // for a reason nobody could diagnose.
+            }
+        }
+
+        return total;
+    }
+
+    /// <summary>
     /// Executes a non-query statement.
     /// </summary>
     /// <param name="connection">Open connection.</param>
