@@ -50,6 +50,16 @@ public class SessionResponse
     [JsonPropertyName("expiresAt")]
     public DateTimeOffset? ExpiresAt { get; set; }
 
+    /// <summary>
+    /// Gets or sets why a snapshot is being delivered rather than changes.
+    /// </summary>
+    /// <remarks>
+    /// <c>newClient</c>, <c>checkpointExpired</c>, <c>journalGap</c>, <c>schemaChanged</c>,
+    /// <c>snapshotIncomplete</c> or <c>clientRequested</c>. Absent on a change session.
+    /// </remarks>
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
+
     /// <summary>Gets or sets the session state, for diagnostics.</summary>
     [JsonPropertyName("state")]
     public string? State { get; set; }

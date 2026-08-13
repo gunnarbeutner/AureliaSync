@@ -18,7 +18,8 @@ public sealed class SessionStore
         """
         SELECT id, user_id, client_id, mode, protocol_version, wire_schema, generation,
                baseline_sequence, upper_bound, highest_issued_ordinal, acked_ordinal, state,
-               created_at, last_seen_at, expires_at
+               created_at, last_seen_at, expires_at,
+               segments_delivered, records_delivered, bytes_delivered, last_error_correlation, reason
           FROM sessions
         """;
 
@@ -77,9 +78,9 @@ public sealed class SessionStore
                     INSERT INTO sessions (id, user_id, client_id, mode, protocol_version, wire_schema,
                                           generation, baseline_sequence, upper_bound,
                                           highest_issued_ordinal, acked_ordinal, state,
-                                          created_at, last_seen_at, expires_at)
+                                          created_at, last_seen_at, expires_at, reason)
                     VALUES ($id, $user, $client, $mode, $protocol, $schema, $generation, $baseline,
-                            $upper, $issued, $acked, $state, $now, $now, $expires);
+                            $upper, $issued, $acked, $state, $now, $now, $expires, $reason);
                     """,
                     ("$id", session.Id),
                     ("$user", session.UserId.ToString("N")),
@@ -94,7 +95,8 @@ public sealed class SessionStore
                     ("$acked", session.AckedOrdinal),
                     ("$state", session.State),
                     ("$now", Now()),
-                    ("$expires", session.ExpiresAt.ToUnixTimeMilliseconds()));
+                    ("$expires", session.ExpiresAt.ToUnixTimeMilliseconds()),
+                    ("$reason", (object?)session.Reason ?? DBNull.Value));
             },
             cancellationToken);
     }
@@ -133,6 +135,30 @@ public sealed class SessionStore
         long issuedOrdinal,
         DateTimeOffset expiresAt,
         CancellationToken cancellationToken = default) =>
+        RecordIssuedAsync(sessionId, issuedOrdinal, expiresAt, 0, 0, cancellationToken);
+
+    /// <summary>
+    /// Records delivery progress along with what the segment contained.
+    /// </summary>
+    /// <remarks>
+    /// The counters ride on the write that already happens once per segment, so observability here
+    /// costs nothing extra. They are what makes a sync that failed on the client side legible from
+    /// the server: without them a session records the state it reached but not what it sent.
+    /// </remarks>
+    /// <param name="sessionId">Session identifier.</param>
+    /// <param name="issuedOrdinal">Highest ordinal placed on the wire.</param>
+    /// <param name="expiresAt">Refreshed idle expiry.</param>
+    /// <param name="records">Records in the segment just written.</param>
+    /// <param name="bytes">Payload bytes in the segment just written.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once recorded.</returns>
+    public Task RecordIssuedAsync(
+        string sessionId,
+        long issuedOrdinal,
+        DateTimeOffset expiresAt,
+        long records,
+        long bytes,
+        CancellationToken cancellationToken = default) =>
         _database.WriteAsync(
             (connection, transaction) => SyncDatabase.ExecuteWithParameters(
                 connection,
@@ -141,14 +167,100 @@ public sealed class SessionStore
                 UPDATE sessions
                    SET highest_issued_ordinal = MAX(highest_issued_ordinal, $issued),
                        state = CASE WHEN state = 'preparing' THEN 'streaming' ELSE state END,
+                       segments_delivered = segments_delivered + 1,
+                       records_delivered = records_delivered + $records,
+                       bytes_delivered = bytes_delivered + $bytes,
                        last_seen_at = $now, expires_at = $expires
                  WHERE id = $id;
                 """,
                 ("$issued", issuedOrdinal),
+                ("$records", records),
+                ("$bytes", bytes),
                 ("$now", Now()),
                 ("$expires", expiresAt.ToUnixTimeMilliseconds()),
                 ("$id", sessionId)),
             cancellationToken);
+
+    /// <summary>
+    /// Records that a session failed, so the correlation identifier can be found later.
+    /// </summary>
+    /// <param name="sessionId">Session identifier.</param>
+    /// <param name="errorCode">Machine-readable code.</param>
+    /// <param name="correlationId">Correlation identifier tying this to the server log.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once recorded.</returns>
+    public Task RecordErrorAsync(
+        string sessionId,
+        string errorCode,
+        string correlationId,
+        CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                UPDATE sessions SET error_code = $code, last_error_correlation = $correlation
+                 WHERE id = $id;
+                """,
+                ("$code", errorCode),
+                ("$correlation", correlationId),
+                ("$id", sessionId)),
+            cancellationToken);
+
+    /// <summary>
+    /// Reads recent sessions for administrator diagnostics.
+    /// </summary>
+    /// <param name="limit">How many to return, newest first.</param>
+    /// <returns>Recent sessions.</returns>
+    public IReadOnlyList<SessionInfo> RecentSessions(int limit)
+    {
+        var sessions = new List<SessionInfo>();
+
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectSession + " ORDER BY created_at DESC LIMIT $limit;";
+        command.Parameters.AddWithValue("$limit", limit);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            sessions.Add(ReadSession(reader));
+        }
+
+        return sessions;
+    }
+
+    /// <summary>
+    /// Reads every subscription for administrator diagnostics.
+    /// </summary>
+    /// <returns>All subscriptions with their positions.</returns>
+    public IReadOnlyList<(string ClientId, SubscriptionInfo Subscription)> AllSubscriptions()
+    {
+        var rows = new List<(string, SubscriptionInfo)>();
+
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT client_id, ack_sequence, snapshot_generation, snapshot_acked, state, reason
+              FROM subscriptions ORDER BY last_seen_at DESC;
+            """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add((reader.GetString(0), new SubscriptionInfo
+            {
+                AckSequence = reader.GetInt64(1),
+                SnapshotGeneration = reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                SnapshotAcked = reader.GetInt32(3) == 1,
+                State = reader.GetString(4),
+                Reason = reader.IsDBNull(5) ? null : reader.GetString(5)
+            }));
+        }
+
+        return rows;
+    }
 
     /// <summary>
     /// Attaches a snapshot to a session that was waiting for one to finish building.
@@ -583,6 +695,11 @@ public sealed class SessionStore
         State = reader.GetString(11),
         CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)),
         LastSeenAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
-        ExpiresAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14))
+        ExpiresAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)),
+        SegmentsDelivered = reader.GetInt64(15),
+        RecordsDelivered = reader.GetInt64(16),
+        BytesDelivered = reader.GetInt64(17),
+        LastErrorCorrelation = reader.IsDBNull(18) ? null : reader.GetString(18),
+        Reason = reader.IsDBNull(19) ? null : reader.GetString(19)
     };
 }

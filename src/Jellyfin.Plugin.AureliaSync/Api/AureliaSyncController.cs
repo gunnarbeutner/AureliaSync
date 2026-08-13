@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Net.Mime;
 using System.Threading;
 using System.Threading.Tasks;
@@ -156,7 +157,55 @@ public class AureliaSyncController : ControllerBase
             counts["journal"] = Scalar(connection, "SELECT COUNT(*) FROM journal;");
         }
 
+        object? journal = null;
+        object[] sessions = Array.Empty<object>();
+        object[] subscriptions = Array.Empty<object>();
+
+        if (_runtime.IsUsable)
+        {
+            journal = new
+            {
+                head = _runtime.Journal.Head(),
+                floor = _runtime.Journal.Floor(),
+                records = _runtime.Journal.Count()
+            };
+
+            // The counters are the point of this block: when a sync fails on a phone somewhere, this
+            // is the only account of what the server actually sent.
+            sessions = _runtime.Sessions.RecentSessions(20)
+                .Select(s => (object)new
+                {
+                    id = s.Id[..Math.Min(10, s.Id.Length)],
+                    client = s.ClientId,
+                    s.Mode,
+                    s.State,
+                    s.Reason,
+                    generation = s.Generation,
+                    position = new { issued = s.HighestIssuedOrdinal, acked = s.AckedOrdinal, upper = s.UpperBound },
+                    delivered = new { s.SegmentsDelivered, s.RecordsDelivered, s.BytesDelivered },
+                    lastErrorCorrelation = s.LastErrorCorrelation,
+                    createdAt = s.CreatedAt,
+                    lastSeenAt = s.LastSeenAt
+                })
+                .ToArray();
+
+            subscriptions = _runtime.Sessions.AllSubscriptions()
+                .Select(row => (object)new
+                {
+                    client = row.ClientId,
+                    position = row.Subscription.AckSequence,
+                    generation = row.Subscription.SnapshotGeneration,
+                    snapshotAcked = row.Subscription.SnapshotAcked,
+                    state = row.Subscription.State,
+                    reason = row.Subscription.Reason,
+                    canReceiveChanges = row.Subscription.CanReceiveChanges
+                })
+                .ToArray();
+        }
+
         // Deliberately reports aggregates only: no payloads, and no other user's listening data.
+        // Client identifiers appear because an administrator needs to tell devices apart; session
+        // identifiers are truncated because a whole one is the capability for an open session.
         return Ok(new
         {
             health = DescribeHealth(health),
@@ -166,7 +215,11 @@ public class AureliaSyncController : ControllerBase
             pluginVersion = Plugin.Instance?.Version?.ToString() ?? "0.0.0.0",
             serverVersion = _applicationHost.ApplicationVersionString,
             targetAbi = WireSchema.TargetAbi,
+            wireSchema = new { min = WireSchema.WireSchemaVersionMin, max = WireSchema.WireSchemaVersionMax },
             rowCounts = counts,
+            journal,
+            subscriptions,
+            recentSessions = sessions,
             serverTime = DateTimeOffset.UtcNow
         });
     }

@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net.Mime;
 using System.Threading;
 using System.Threading.Tasks;
@@ -189,6 +190,8 @@ public class SyncSessionsController : ControllerBase
             return StatusCode(StatusCodes.Status201Created, changeSession);
         }
 
+        var reason = SnapshotReason(userId, request, schemaVersion);
+
         var snapshot = await _coordinator
             .EnsureSnapshotAsync(userId, schemaVersion, request.Reset, cancellationToken)
             .ConfigureAwait(false);
@@ -212,6 +215,7 @@ public class SyncSessionsController : ControllerBase
             HighestIssuedOrdinal = startOrdinal,
             AckedOrdinal = startOrdinal,
             State = snapshot.IsStreamable ? SessionInfo.StateStreaming : SessionInfo.StatePreparing,
+            Reason = reason,
             CreatedAt = DateTimeOffset.UtcNow,
             LastSeenAt = DateTimeOffset.UtcNow,
             ExpiresAt = DateTimeOffset.UtcNow.AddHours(Math.Max(1, configuration.SessionIdleExpiryHours))
@@ -220,9 +224,11 @@ public class SyncSessionsController : ControllerBase
         await sessions.CreateAsync(session, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
-            "AureliaSync: opened session for client {Client} on snapshot {Generation}, resuming at {Ordinal}",
+            "AureliaSync: opened a snapshot session for {Client} on generation {Generation} "
+            + "({Reason}), resuming at {Ordinal}",
             request.ClientId,
             snapshot.Generation,
+            reason,
             startOrdinal);
 
         return StatusCode(StatusCodes.Status201Created, Describe(session, snapshot, startOrdinal));
@@ -415,7 +421,9 @@ public class SyncSessionsController : ControllerBase
             var budget = Math.Clamp(maxBytes ?? configuration.MaxBytesPerSegment, 64 * 1024, 32L * 1024 * 1024);
             var expiresAt = DateTimeOffset.UtcNow.AddHours(Math.Max(1, configuration.SessionIdleExpiryHours));
 
-            var outcome = await NdjsonSegmentWriter.WriteAsync(
+            SegmentOutcome outcome = default;
+
+            outcome = await NdjsonSegmentWriter.WriteAsync(
                 output,
                 begin,
                 rows,
@@ -425,7 +433,13 @@ public class SyncSessionsController : ControllerBase
                 Math.Clamp(maxRecords ?? configuration.MaxRecordsPerSegment, 1, 5000),
                 (long)(budget * 0.94),
                 TimeSpan.FromMilliseconds(Math.Max(1000, configuration.SegmentTimeBudgetMs)),
-                issued => _runtime.Sessions.RecordIssuedAsync(sessionId, issued, expiresAt, CancellationToken.None),
+                issued => _runtime.Sessions.RecordIssuedAsync(
+                    sessionId,
+                    issued,
+                    expiresAt,
+                    rows.Count,
+                    rows.Sum(r => (long)r.Payload.Length),
+                    CancellationToken.None),
                 cancellationToken).ConfigureAwait(false);
 
             if (configuration.VerboseDiagnostics)
@@ -666,6 +680,47 @@ public class SyncSessionsController : ControllerBase
     }
 
     /// <summary>
+    /// Works out why this client is being given a snapshot rather than changes.
+    /// </summary>
+    /// <remarks>
+    /// Reported to the client so a full resynchronisation is never simply unexplained. Each of these
+    /// costs the client its whole catalog, so which one happened is the difference between
+    /// diagnosing a problem and guessing at it.
+    /// </remarks>
+    private string SnapshotReason(Guid userId, CreateSessionRequest request, int schemaVersion)
+    {
+        if (request.Reset)
+        {
+            return SessionReason.ClientRequested;
+        }
+
+        var subscription = _runtime.Sessions.GetSubscription(userId, request.ClientId);
+        if (subscription is null)
+        {
+            return SessionReason.NewClient;
+        }
+
+        if (string.Equals(subscription.State, SubscriptionInfo.StateExpired, StringComparison.Ordinal))
+        {
+            return SessionReason.CheckpointExpired;
+        }
+
+        // A gap is recorded by whichever pass discovered it — retention, or session creation — so
+        // the reason survives even though the subscription has since been reset.
+        if (string.Equals(subscription.Reason, SyncErrorCode.JournalGap, StringComparison.Ordinal))
+        {
+            return SessionReason.JournalGap;
+        }
+
+        if (!subscription.SnapshotAcked)
+        {
+            return SessionReason.SnapshotIncomplete;
+        }
+
+        return subscription.Reason ?? SessionReason.SchemaChanged;
+    }
+
+    /// <summary>
     /// Streams one segment of journal records.
     /// </summary>
     /// <remarks>
@@ -737,7 +792,13 @@ public class SyncSessionsController : ControllerBase
                 records,
                 (long)(budget * 0.94),
                 TimeSpan.FromMilliseconds(Math.Max(1000, configuration.SegmentTimeBudgetMs)),
-                issued => _runtime.Sessions.RecordIssuedAsync(session.Id, issued, expiresAt, CancellationToken.None),
+                issued => _runtime.Sessions.RecordIssuedAsync(
+                    session.Id,
+                    issued,
+                    expiresAt,
+                    rows.Count,
+                    rows.Sum(r => (long)r.Payload.Length),
+                    CancellationToken.None),
                 cancellationToken,
                 sequence => new Cursor(Cursor.JournalKind, 0, sequence)).ConfigureAwait(false);
         }
@@ -910,6 +971,7 @@ public class SyncSessionsController : ControllerBase
             JournalHead = 0,
             ExpiresAt = session.ExpiresAt,
             State = session.State,
+            Reason = session.Reason,
             Message = snapshot is { State: SnapshotInfo.StateBuilding }
                 ? string.Format(
                     CultureInfo.InvariantCulture,

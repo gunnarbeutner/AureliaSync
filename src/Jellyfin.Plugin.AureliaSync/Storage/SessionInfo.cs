@@ -68,6 +68,28 @@ public sealed record SessionInfo
     /// <summary>Gets the session state.</summary>
     public string State { get; init; } = StatePreparing;
 
+    /// <summary>
+    /// Gets why this session is a snapshot rather than a change session.
+    /// </summary>
+    /// <remarks>
+    /// Machine-readable, so a client log line explains itself rather than saying only that a full
+    /// resynchronisation happened: <c>newClient</c>, <c>checkpointExpired</c>, <c>journalGap</c>,
+    /// <c>schemaChanged</c>, or <c>clientRequested</c>.
+    /// </remarks>
+    public string? Reason { get; init; }
+
+    /// <summary>Gets how many segments this session has delivered.</summary>
+    public long SegmentsDelivered { get; init; }
+
+    /// <summary>Gets how many records this session has delivered.</summary>
+    public long RecordsDelivered { get; init; }
+
+    /// <summary>Gets how many payload bytes this session has delivered.</summary>
+    public long BytesDelivered { get; init; }
+
+    /// <summary>Gets the correlation identifier of this session's most recent failure.</summary>
+    public string? LastErrorCorrelation { get; init; }
+
     /// <summary>Gets when the session was created.</summary>
     public DateTimeOffset CreatedAt { get; init; }
 
