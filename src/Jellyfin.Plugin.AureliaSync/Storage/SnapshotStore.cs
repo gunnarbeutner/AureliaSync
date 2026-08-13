@@ -95,8 +95,8 @@ public sealed class SnapshotStore
                 command.Transaction = transaction;
                 command.CommandText =
                     """
-                    INSERT INTO snapshot_rows (generation, ordinal, kind, entity_type, entity_id, payload, checksum)
-                    VALUES ($generation, $ordinal, $kind, $entityType, $entityId, $payload, $checksum);
+                    INSERT INTO snapshot_rows (generation, ordinal, kind, entity_type, entity_id, payload, checksum, group_key)
+                    VALUES ($generation, $ordinal, $kind, $entityType, $entityId, $payload, $checksum, $groupKey);
                     """;
 
                 var generationParameter = command.Parameters.Add("$generation", SqliteType.Integer);
@@ -106,6 +106,7 @@ public sealed class SnapshotStore
                 var entityId = command.Parameters.Add("$entityId", SqliteType.Text);
                 var payload = command.Parameters.Add("$payload", SqliteType.Blob);
                 var checksum = command.Parameters.Add("$checksum", SqliteType.Text);
+                var groupKey = command.Parameters.Add("$groupKey", SqliteType.Text);
 
                 generationParameter.Value = generation;
                 command.Prepare();
@@ -118,6 +119,7 @@ public sealed class SnapshotStore
                     entityId.Value = row.EntityId;
                     payload.Value = row.Payload;
                     checksum.Value = (object?)row.Checksum ?? DBNull.Value;
+                    groupKey.Value = (object?)row.GroupKey ?? DBNull.Value;
                     command.ExecuteNonQuery();
                 }
             },
@@ -336,6 +338,25 @@ public sealed class SnapshotStore
     }
 
     /// <summary>
+    /// Returns the highest ordinal in a snapshot.
+    /// </summary>
+    /// <remarks>
+    /// This is the delivery upper bound, and it is <b>not</b> the row count. Ordinal ranges are
+    /// reserved per phase during a build, so unused reservations leave gaps; comparing a delivered
+    /// ordinal against the row count would report catch-up early and truncate the client's library.
+    /// </remarks>
+    /// <param name="generation">Target snapshot.</param>
+    /// <returns>The highest ordinal, or zero when the snapshot has no rows.</returns>
+    public long MaxOrdinal(long generation)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(ordinal), 0) FROM snapshot_rows WHERE generation = $generation;";
+        command.Parameters.AddWithValue("$generation", generation);
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// Reads rows for delivery.
     /// </summary>
     /// <remarks>
@@ -361,7 +382,7 @@ public sealed class SnapshotStore
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT ordinal, kind, entity_type, entity_id, payload, checksum
+            SELECT ordinal, kind, entity_type, entity_id, payload, checksum, group_key
               FROM snapshot_rows
              WHERE generation = $generation AND ordinal > $after
              ORDER BY ordinal
@@ -382,7 +403,8 @@ public sealed class SnapshotStore
                 reader.IsDBNull(2) ? null : reader.GetString(2),
                 reader.GetString(3),
                 payload,
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
 
             bytes += payload.Length;
             if (bytes >= maxPayloadBytes)

@@ -1,0 +1,412 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
+using Jellyfin.Plugin.AureliaSync.Configuration;
+using Jellyfin.Plugin.AureliaSync.Projection;
+using Jellyfin.Plugin.AureliaSync.Storage;
+using Jellyfin.Plugin.AureliaSync.Wire;
+using Jellyfin.Plugin.AureliaSync.Wire.Payloads;
+using MediaBrowser.Controller.Drawing;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Audio;
+using MediaBrowser.Controller.Library;
+using Microsoft.Extensions.Logging;
+
+namespace Jellyfin.Plugin.AureliaSync.Snapshots;
+
+/// <summary>
+/// Materialises one user's visible music library into a snapshot.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Records are written in a different order from the one they are numbered in.</b> Ordinal
+/// ranges are reserved up front from the enumeration counts, then each phase writes into its own
+/// range. This is what resolves an otherwise circular dependency: albums must be numbered before
+/// their tracks, but an album's track count is only known once its tracks have been counted. Since
+/// a snapshot is only ever streamed after it completes, the order rows are inserted in is
+/// invisible to clients.
+/// </para>
+/// <para>
+/// Reserved ranges may end up sparse — if hydration drops an item the enumeration listed, its
+/// ordinal simply goes unused. Gaps are harmless: delivery reads <c>ordinal &gt; after</c> in
+/// order, and cursors are opaque.
+/// </para>
+/// <para>
+/// No Jellyfin transaction is held. Every call is a bounded, independent query, and writes go into
+/// the plugin's own database in batches, so a build is a finite background task rather than
+/// something the rest of the server has to wait behind.
+/// </para>
+/// </remarks>
+public sealed class SnapshotBuilder
+{
+    private readonly ILibraryManager _libraryManager;
+    private readonly IUserManager _userManager;
+    private readonly SnapshotStore _store;
+    private readonly LibraryEnumerator _enumerator;
+    private readonly BaseItemFactsReader _reader;
+    private readonly ILogger _logger;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SnapshotBuilder"/> class.
+    /// </summary>
+    /// <param name="libraryManager">Jellyfin's library manager.</param>
+    /// <param name="userManager">Jellyfin's user manager.</param>
+    /// <param name="imageProcessor">Used to compute image cache tags.</param>
+    /// <param name="store">Where snapshots are persisted.</param>
+    /// <param name="logger">Logger.</param>
+    public SnapshotBuilder(
+        ILibraryManager libraryManager,
+        IUserManager userManager,
+        IImageProcessor imageProcessor,
+        SnapshotStore store,
+        ILogger logger)
+    {
+        _libraryManager = libraryManager;
+        _userManager = userManager;
+        _store = store;
+        _logger = logger;
+        _enumerator = new LibraryEnumerator(libraryManager, logger);
+        _reader = new BaseItemFactsReader(imageProcessor, logger);
+    }
+
+    /// <summary>
+    /// Builds a snapshot for one user.
+    /// </summary>
+    /// <param name="userId">The user whose visible library to capture.</param>
+    /// <param name="generation">The snapshot generation to fill, already created.</param>
+    /// <param name="configuration">Plugin configuration.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The number of records written.</returns>
+    public async Task<long> BuildAsync(
+        Guid userId,
+        long generation,
+        PluginConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var user = _userManager.GetUserById(userId)
+            ?? throw new InvalidOperationException(
+                string.Format(CultureInfo.InvariantCulture, "Unknown user {0}", userId));
+
+        var batchSize = Math.Max(50, configuration.SnapshotHydrationBatchSize);
+        var started = DateTimeOffset.UtcNow;
+
+        // ---- Enumerate. Every one of these is access-filtered; see LibraryEnumerator. ----
+        var genres = _enumerator.Genres(user);
+        var artists = _enumerator.Artists(user);
+        var albumArtistIds = _enumerator.AlbumArtistIds(user);
+        var albumIds = _enumerator.EnumerateIds(user, BaseItemKind.MusicAlbum);
+        var trackIds = _enumerator.EnumerateIds(user, BaseItemKind.Audio);
+        var playlists = _enumerator.Playlists(user, configuration.AudioPlaylistsOnly);
+
+        _logger.LogInformation(
+            "AureliaSync: snapshot {Generation} covers {Genres} genres, {Artists} artists, {Albums} albums, {Tracks} tracks, {Playlists} playlists",
+            generation,
+            genres.Count,
+            artists.Count,
+            albumIds.Count,
+            trackIds.Count,
+            playlists.Count);
+
+        // ---- Reserve one ordinal range per phase, in protocol order. ----
+        var ordinals = new OrdinalRanges(genres.Count, artists.Count, albumIds.Count, trackIds.Count, playlists.Count);
+
+        var artistIdsByName = LibraryEnumerator.ArtistIdsByName(artists);
+        var albumSummaries = new Dictionary<Guid, AlbumSummary>();
+        var projector = new PayloadProjector(artistIdsByName, albumSummaries, _enumerator.GenreId);
+
+        var userData = new List<UserDataPayload>();
+        long written = 0;
+
+        // ---- Albums are hydrated first, because tracks need their names and artwork. ----
+        await _store.SetProgressAsync(generation, "album", 0, albumIds.Count, cancellationToken).ConfigureAwait(false);
+        var albumFacts = new List<ItemFacts>(albumIds.Count);
+        foreach (var batch in LibraryEnumerator.Batch(albumIds, batchSize))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            foreach (var item in _enumerator.Hydrate(user, batch))
+            {
+                var facts = _reader.Read(item, userId);
+                albumFacts.Add(facts);
+                albumSummaries[facts.Id] = new AlbumSummary(facts.Name, facts.ImageTag);
+                Collect(projector, facts, userData);
+            }
+
+            await ThrottleAsync(configuration, cancellationToken).ConfigureAwait(false);
+        }
+
+        // ---- Tracks: written straight into their reserved range, counting per album as we go. ----
+        await _store.SetProgressAsync(generation, "track", 0, trackIds.Count, cancellationToken).ConfigureAwait(false);
+        var albumIdSet = albumIds.ToHashSet();
+        var trackCountByAlbum = new Dictionary<Guid, int>();
+        var trackFactsById = new Dictionary<Guid, ItemFacts>();
+        var trackOrdinal = ordinals.TrackStart;
+        long done = 0;
+
+        foreach (var batch in LibraryEnumerator.Batch(trackIds, batchSize))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var rows = new List<SnapshotRow>(batch.Count);
+
+            foreach (var item in _enumerator.Hydrate(user, batch))
+            {
+                var facts = _reader.Read(item, userId, albumIdSet);
+                var payload = projector.Track(facts);
+
+                rows.Add(NewRow(++trackOrdinal, WireKind.ItemUpsert, WireEntityType.Track, payload.Id, payload));
+                Collect(projector, facts, userData);
+
+                if (facts.AlbumId is { } albumId)
+                {
+                    trackCountByAlbum[albumId] = trackCountByAlbum.GetValueOrDefault(albumId) + 1;
+                }
+
+                // Playlist entries repeat the whole track, and a playlist can reference a track
+                // filed anywhere, so the facts are kept rather than re-read later.
+                trackFactsById[facts.Id] = facts;
+            }
+
+            await _store.AppendAsync(generation, rows, cancellationToken).ConfigureAwait(false);
+            written += rows.Count;
+            done += batch.Count;
+
+            await _store.SetProgressAsync(generation, "track", done, trackIds.Count, cancellationToken)
+                .ConfigureAwait(false);
+            await ThrottleAsync(configuration, cancellationToken).ConfigureAwait(false);
+        }
+
+        // ---- Genres and artists: small, and independent of everything above. ----
+        var genreRows = new List<SnapshotRow>(genres.Count);
+        var genreOrdinal = ordinals.GenreStart;
+        foreach (var (item, counts) in genres.OrderBy(g => g.Item.Id.ToString("N"), StringComparer.Ordinal))
+        {
+            var payload = projector.Genre(item.Id, item.Name ?? string.Empty, counts.AlbumCount);
+            genreRows.Add(NewRow(++genreOrdinal, WireKind.ItemUpsert, WireEntityType.Genre, payload.Id, payload));
+        }
+
+        await _store.AppendAsync(generation, genreRows, cancellationToken).ConfigureAwait(false);
+        written += genreRows.Count;
+
+        var artistRows = new List<SnapshotRow>(artists.Count);
+        var artistOrdinal = ordinals.ArtistStart;
+        foreach (var (item, counts) in artists.OrderBy(a => a.Item.Id.ToString("N"), StringComparer.Ordinal))
+        {
+            var facts = _reader.Read(item, userId);
+            var payload = projector.Artist(facts, counts.AlbumCount, albumArtistIds.Contains(item.Id));
+            artistRows.Add(NewRow(++artistOrdinal, WireKind.ItemUpsert, WireEntityType.Artist, payload.Id, payload));
+            Collect(projector, facts, userData);
+        }
+
+        await _store.AppendAsync(generation, artistRows, cancellationToken).ConfigureAwait(false);
+        written += artistRows.Count;
+
+        // ---- Albums, now that their track counts are known. ----
+        var albumRows = new List<SnapshotRow>(albumFacts.Count);
+        var albumOrdinal = ordinals.AlbumStart;
+        foreach (var facts in albumFacts.OrderBy(a => a.Id.ToString("N"), StringComparer.Ordinal))
+        {
+            var payload = projector.Album(facts, trackCountByAlbum.GetValueOrDefault(facts.Id));
+            albumRows.Add(NewRow(++albumOrdinal, WireKind.ItemUpsert, WireEntityType.Album, payload.Id, payload));
+        }
+
+        await _store.AppendAsync(generation, albumRows, cancellationToken).ConfigureAwait(false);
+        written += albumRows.Count;
+
+        // ---- Playlists and their membership. ----
+        await _store.SetProgressAsync(generation, "playlist", 0, playlists.Count, cancellationToken)
+            .ConfigureAwait(false);
+
+        var entryOrdinal = ordinals.EntryStart;
+        var playlistOrdinal = ordinals.PlaylistStart;
+        var playlistRows = new List<SnapshotRow>(playlists.Count);
+
+        foreach (var playlist in playlists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var entries = ReadEntries(playlist, user, userId, albumIdSet, trackFactsById);
+
+            // Every entry for a playlist goes out in one batch and, later, one segment: the client
+            // clears the playlist's membership and reinserts only what the segment contains.
+            var entryRows = new List<SnapshotRow>(entries.Count);
+            foreach (var (facts, entryId, position) in entries)
+            {
+                var payload = projector.PlaylistEntry(facts, playlist.Id, entryId, position);
+                entryRows.Add(NewRow(
+                    ++entryOrdinal, WireKind.PlaylistReplace, null, payload.Id, payload, playlist.Id.ToString("N")));
+            }
+
+            await _store.AppendAsync(generation, entryRows, cancellationToken).ConfigureAwait(false);
+            written += entryRows.Count;
+
+            var playlistFacts = _reader.Read(playlist, userId);
+            var playlistPayload = projector.Playlist(playlistFacts, entries.Count);
+            playlistRows.Add(NewRow(
+                ++playlistOrdinal, WireKind.ItemUpsert, WireEntityType.Playlist, playlistPayload.Id, playlistPayload));
+            Collect(projector, playlistFacts, userData);
+        }
+
+        await _store.AppendAsync(generation, playlistRows, cancellationToken).ConfigureAwait(false);
+        written += playlistRows.Count;
+
+        // ---- User data last, so favourites land on rows that already exist. ----
+        var userDataOrdinal = entryOrdinal + 1;
+        var userDataRows = new List<SnapshotRow>(userData.Count);
+        foreach (var payload in userData.OrderBy(u => u.Id, StringComparer.Ordinal))
+        {
+            userDataRows.Add(NewRow(userDataOrdinal++, WireKind.UserDataUpsert, null, payload.Id, payload));
+        }
+
+        await _store.AppendAsync(generation, userDataRows, cancellationToken).ConfigureAwait(false);
+        written += userDataRows.Count;
+
+        // ---- Seal it. ----
+        var (checksum, bytes) = ComputeChecksum(generation);
+        var expiresAt = DateTimeOffset.UtcNow.AddHours(Math.Max(1, configuration.SnapshotRetentionHours));
+        await _store.CompleteAsync(generation, written, bytes, checksum, expiresAt, cancellationToken)
+            .ConfigureAwait(false);
+
+        _logger.LogInformation(
+            "AureliaSync: snapshot {Generation} complete — {Records} records, {Bytes} bytes, in {Elapsed}",
+            generation,
+            written,
+            bytes,
+            DateTimeOffset.UtcNow - started);
+
+        return written;
+    }
+
+    /// <summary>
+    /// Reads a playlist's visible audio membership, deduplicated and densely renumbered.
+    /// </summary>
+    /// <remarks>
+    /// Duplicates are dropped keeping the first occurrence: the client's membership table is keyed
+    /// on (playlist, item), so a repeat would collapse there anyway and leave the stated track
+    /// count unreachable.
+    /// </remarks>
+    private List<(ItemFacts Facts, string? EntryId, int Position)> ReadEntries(
+        MediaBrowser.Controller.Playlists.Playlist playlist,
+        Jellyfin.Database.Implementations.Entities.User user,
+        Guid userId,
+        IReadOnlySet<Guid> albumIds,
+        Dictionary<Guid, ItemFacts> knownTracks)
+    {
+        var entries = new List<(ItemFacts, string?, int)>();
+        var seen = new HashSet<Guid>();
+
+        foreach (var (link, item) in playlist.GetManageableItems())
+        {
+            if (item is not Audio || !item.IsVisible(user, false) || !seen.Add(item.Id))
+            {
+                continue;
+            }
+
+            // Matches what Jellyfin's own playlist endpoint reports, which is the item's identifier
+            // rather than a per-entry handle — Jellyfin has no stable per-entry identity here.
+            var entryId = link.ItemId?.ToString("N", CultureInfo.InvariantCulture);
+
+            var facts = knownTracks.TryGetValue(item.Id, out var known)
+                ? known
+                : _reader.Read(item, userId, albumIds);
+
+            entries.Add((facts, entryId, entries.Count));
+        }
+
+        return entries;
+    }
+
+    private static void Collect(PayloadProjector projector, ItemFacts facts, List<UserDataPayload> sink)
+    {
+        var payload = projector.UserData(facts);
+        if (payload is not null)
+        {
+            sink.Add(payload);
+        }
+    }
+
+    private static SnapshotRow NewRow<T>(
+        long ordinal, string kind, string? entityType, string entityId, T payload, string? groupKey = null)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, WireSchema.JsonOptions);
+        return new SnapshotRow(ordinal, kind, entityType, entityId, bytes, null, groupKey);
+    }
+
+    private static Task ThrottleAsync(PluginConfiguration configuration, CancellationToken cancellationToken) =>
+        configuration.SnapshotBatchDelayMs > 0
+            ? Task.Delay(configuration.SnapshotBatchDelayMs, cancellationToken)
+            : Task.CompletedTask;
+
+    /// <summary>
+    /// Hashes the snapshot's payloads in ordinal order.
+    /// </summary>
+    /// <remarks>
+    /// Computed by reading back what was actually stored rather than by accumulating during the
+    /// build, both because rows are written out of ordinal order and because this way the checksum
+    /// describes the snapshot on disk rather than the intent that produced it.
+    /// </remarks>
+    private (string Checksum, long Bytes) ComputeChecksum(long generation)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long ordinal = 0;
+        long bytes = 0;
+
+        while (true)
+        {
+            var page = _store.ReadAfter(generation, ordinal, 2_000, long.MaxValue);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var row in page)
+            {
+                hash.AppendData(row.Payload);
+                bytes += row.Payload.Length;
+            }
+
+            ordinal = page[^1].Ordinal;
+        }
+
+        return ("sha256:" + Convert.ToHexStringLower(hash.GetHashAndReset()), bytes);
+    }
+
+    /// <summary>
+    /// The ordinal range reserved for each phase, in protocol order.
+    /// </summary>
+    private readonly struct OrdinalRanges
+    {
+        public OrdinalRanges(int genres, int artists, int albums, int tracks, int playlists)
+        {
+            GenreStart = 0;
+            ArtistStart = GenreStart + genres;
+            AlbumStart = ArtistStart + artists;
+            TrackStart = AlbumStart + albums;
+            PlaylistStart = TrackStart + tracks;
+
+            // Playlist membership has no count until the playlists have been read, so it simply
+            // continues after them and user data continues after that.
+            EntryStart = PlaylistStart + playlists;
+        }
+
+        public long GenreStart { get; }
+
+        public long ArtistStart { get; }
+
+        public long AlbumStart { get; }
+
+        public long TrackStart { get; }
+
+        public long PlaylistStart { get; }
+
+        public long EntryStart { get; }
+    }
+}

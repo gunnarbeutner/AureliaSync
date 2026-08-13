@@ -20,6 +20,9 @@ public sealed class SyncRuntime : IDisposable
         new TaskCompletionSource<SyncDatabaseHealth>(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private SyncDatabase? _database;
+    private SnapshotStore? _snapshots;
+    private SessionStore? _sessions;
+    private byte[]? _signingKey;
     private bool _disposed;
 
     /// <summary>
@@ -58,13 +61,45 @@ public sealed class SyncRuntime : IDisposable
         && (Health == SyncDatabaseHealth.Ok || Health == SyncDatabaseHealth.Degraded);
 
     /// <summary>
+    /// Gets the snapshot store. Only valid once <see cref="IsUsable"/>.
+    /// </summary>
+    public SnapshotStore Snapshots =>
+        _snapshots ?? throw new InvalidOperationException("The AureliaSync database is not available.");
+
+    /// <summary>
+    /// Gets the session, subscription and acknowledgement store. Only valid once <see cref="IsUsable"/>.
+    /// </summary>
+    public SessionStore Sessions =>
+        _sessions ?? throw new InvalidOperationException("The AureliaSync database is not available.");
+
+    /// <summary>
+    /// Gets the key checkpoint tokens are signed with.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Performance",
+        "CA1819:Properties should not return arrays",
+        Justification = "HMACSHA256 takes the key as a byte array; wrapping it in a collection "
+            + "would mean copying key material on every token issue and validation.")]
+    public byte[] SigningKey =>
+        _signingKey ?? throw new InvalidOperationException("The AureliaSync database is not available.");
+
+    /// <summary>
     /// Records successful initialisation.
     /// </summary>
+    /// <remarks>
+    /// The stores are constructed here rather than registered with dependency injection because
+    /// the database they wrap does not exist until after the container has been built: opening and
+    /// migrating it happens on a background task so that startup does not block Kestrel.
+    /// </remarks>
     /// <param name="database">The opened database.</param>
     /// <param name="schemaVersion">Its schema version.</param>
-    public void MarkReady(SyncDatabase database, int schemaVersion)
+    /// <param name="signingKey">The checkpoint-token signing key.</param>
+    public void MarkReady(SyncDatabase database, int schemaVersion, byte[] signingKey)
     {
         _database = database;
+        _snapshots = new SnapshotStore(database);
+        _sessions = new SessionStore(database);
+        _signingKey = signingKey;
         SchemaVersion = schemaVersion;
         Health = SyncDatabaseHealth.Ok;
         Diagnostic = null;

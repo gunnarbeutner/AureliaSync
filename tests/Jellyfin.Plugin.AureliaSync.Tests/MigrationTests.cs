@@ -71,7 +71,9 @@ public sealed class MigrationTests : IDisposable
 
         Assert.True(File.Exists(_databasePath));
         Assert.Equal(runner.TargetVersion, ReadUserVersion());
-        Assert.Equal(1, runner.TargetVersion);
+
+        // Derived, not hardcoded: adding a migration should not require editing this assertion.
+        Assert.Equal(MigrationRunner.All().Max(m => m.Version), runner.TargetVersion);
     }
 
     [Fact]
@@ -118,6 +120,43 @@ public sealed class MigrationTests : IDisposable
         Assert.Contains("ix_subscriptions_expires", indexes);
         Assert.Contains("ix_ack_requests_age", indexes);
         Assert.Contains("ix_journal_scope", indexes);
+    }
+
+    [Fact]
+    public void PlaylistGroupingColumnExists()
+    {
+        // Playlist membership must never be split across segments, which means the segment writer
+        // needs to know where a group ends without parsing payloads.
+        NewRunner().Run(_databasePath);
+
+        using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT group_key FROM snapshot_rows LIMIT 1;";
+        Assert.Null(Record.Exception(() => command.ExecuteScalar()));
+    }
+
+    [Fact]
+    public void MigratingAnExistingV1DatabasePreservesItsRows()
+    {
+        // The live server is already on v1, so this is the upgrade it will actually perform.
+        new MigrationRunner(NullLogger.Instance, new IMigration[] { new M001Initial() }).Run(_databasePath);
+        using (var connection = new SqliteConnection($"Data Source={_databasePath}"))
+        {
+            connection.Open();
+            SyncDatabase.Execute(connection, "INSERT INTO meta (key, value) VALUES ('canary', 'present');");
+        }
+
+        SqliteConnection.ClearAllPools();
+        NewRunner().Run(_databasePath);
+
+        Assert.Equal(MigrationRunner.All().Max(m => m.Version), ReadUserVersion());
+
+        using var check = new SqliteConnection($"Data Source={_databasePath}");
+        check.Open();
+        using var read = check.CreateCommand();
+        read.CommandText = "SELECT value FROM meta WHERE key = 'canary';";
+        Assert.Equal("present", read.ExecuteScalar() as string);
     }
 
     [Fact]
@@ -174,8 +213,8 @@ public sealed class MigrationTests : IDisposable
         var ex = Assert.Throws<InvalidOperationException>(() => NewRunner(migrations).Run(_databasePath));
         Assert.Contains("failed", ex.Message, StringComparison.OrdinalIgnoreCase);
 
-        // The database must still be at v1 and must still hold the canary row.
-        Assert.Equal(1, ReadUserVersion());
+        // The database must still be at the last good version and must still hold the canary row.
+        Assert.Equal(MigrationRunner.All().Max(m => m.Version), ReadUserVersion());
 
         using var check = new SqliteConnection($"Data Source={_databasePath}");
         check.Open();

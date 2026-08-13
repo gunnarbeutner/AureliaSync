@@ -59,7 +59,8 @@ public sealed class MigrationRunner
     public static IReadOnlyList<IMigration> All() =>
         new ReadOnlyCollection<IMigration>(new IMigration[]
         {
-            new M001Initial()
+            new M001Initial(),
+            new M002SnapshotRowGroups()
         });
 
     /// <summary>

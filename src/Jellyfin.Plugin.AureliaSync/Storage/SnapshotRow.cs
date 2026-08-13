@@ -14,6 +14,10 @@ namespace Jellyfin.Plugin.AureliaSync.Storage;
 /// <param name="EntityId">The entity this record describes.</param>
 /// <param name="Payload">Wire-ready JSON bytes.</param>
 /// <param name="Checksum">Optional per-row digest.</param>
+/// <param name="GroupKey">
+/// Rows sharing a non-null key must be delivered in the same segment. Used for playlist
+/// membership, which the client applies by clearing and reinserting.
+/// </param>
 [System.Diagnostics.CodeAnalysis.SuppressMessage(
     "Performance",
     "CA1819:Properties should not return arrays",
@@ -26,4 +30,5 @@ public sealed record SnapshotRow(
     string? EntityType,
     string EntityId,
     byte[] Payload,
-    string? Checksum);
+    string? Checksum,
+    string? GroupKey = null);
