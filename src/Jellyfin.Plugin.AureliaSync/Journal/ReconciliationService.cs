@@ -137,6 +137,17 @@ public sealed class ReconciliationService
         var inventory = new List<InventoryRow>();
         var skipped = 0;
 
+        // The watermark is the whole optimisation. Enumerating identifiers is cheap; hydrating is
+        // not, and an earlier version skipped only the projection — which saved nothing, because
+        // every item had already been loaded by the time the skip was reached. Letting Jellyfin
+        // filter by timestamp means an unchanged item is never loaded at all.
+        //
+        // A null watermark means "never reconciled", so everything is examined.
+        var watermark = seeding ? null : ReadWatermark(scope);
+        var passStarted = DateTime.UtcNow;
+
+        // Albums are hydrated either way — tracks need their names and artwork tags — so the
+        // watermark is applied only to tracks, which are where the 30,000 items are.
         var albumIds = _enumerator.EnumerateIds(user, BaseItemKind.MusicAlbum);
         var albumIdSet = albumIds.ToHashSet();
         var albumSummaries = new Dictionary<Guid, AlbumSummary>();
@@ -179,7 +190,18 @@ public sealed class ReconciliationService
         }
 
         var trackIds = _enumerator.EnumerateIds(user, BaseItemKind.Audio);
-        foreach (var batch in LibraryEnumerator.Batch(trackIds, batchSize))
+        var changedTracks = watermark is null
+            ? trackIds.ToHashSet()
+            : _enumerator.EnumerateIds(user, BaseItemKind.Audio, watermark).ToHashSet();
+
+        // Everything Jellyfin did not touch keeps the checksum it already had, so the inventory
+        // stays complete without those items ever being loaded.
+        foreach (var id in trackIds.Where(id => !changedTracks.Contains(id)))
+        {
+            CarryForward(known, seen, inventory, WireEntityType.Track, id, ref skipped);
+        }
+
+        foreach (var batch in LibraryEnumerator.Batch(trackIds.Where(changedTracks.Contains).ToList(), batchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -351,6 +373,7 @@ public sealed class ReconciliationService
                 inventory.Count);
 
             await WriteInventoryAsync(scope, inventory, seen, cancellationToken).ConfigureAwait(false);
+            await WriteWatermarkAsync(scope, passStarted, cancellationToken).ConfigureAwait(false);
             return 0;
         }
 
@@ -367,8 +390,76 @@ public sealed class ReconciliationService
         }
 
         await WriteInventoryAsync(scope, inventory, seen, cancellationToken).ConfigureAwait(false);
+
+        // Taken from before the pass began, so anything saved while it ran is examined next time
+        // rather than falling into the gap between the two.
+        await WriteWatermarkAsync(scope, passStarted, cancellationToken).ConfigureAwait(false);
         return records.Count;
     }
+
+    /// <summary>
+    /// Keeps an untouched item's inventory entry without loading or projecting it.
+    /// </summary>
+    /// <remarks>
+    /// The inventory is rewritten wholesale at the end of a pass, so an item that is not carried
+    /// forward would look deleted and produce a spurious tombstone.
+    /// </remarks>
+    private static void CarryForward(
+        Dictionary<string, InventoryRow> known,
+        HashSet<string> seen,
+        List<InventoryRow> inventory,
+        string entityType,
+        Guid id,
+        ref int skipped)
+    {
+        var key = entityType + ":" + id.ToString("N");
+        if (!known.TryGetValue(key, out var previous))
+        {
+            // Unknown to the inventory but unchanged by timestamp: it appeared while nobody was
+            // comparing, so it still has to be examined. Leaving it out of `seen` does that.
+            return;
+        }
+
+        seen.Add(key);
+        inventory.Add(previous);
+        skipped++;
+    }
+
+    /// <summary>
+    /// When this user was last reconciled, or null when never.
+    /// </summary>
+    /// <remarks>
+    /// Rewound by a minute. Jellyfin's timestamps and the pass's own clock need not agree exactly,
+    /// and re-examining a few items is free where missing one is a change never delivered.
+    /// </remarks>
+    private DateTime? ReadWatermark(string scope)
+    {
+        using var connection = _runtime.Database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM meta WHERE key = $key;";
+        command.Parameters.AddWithValue("$key", WatermarkKey(scope));
+
+        return command.ExecuteScalar() is string text
+            && DateTime.TryParse(
+                text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed.AddMinutes(-1)
+            : null;
+    }
+
+    private Task<int> WriteWatermarkAsync(string scope, DateTime value, CancellationToken cancellationToken) =>
+        _runtime.Database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                INSERT INTO meta (key, value) VALUES ($key, $value)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """,
+                ("$key", WatermarkKey(scope)),
+                ("$value", value.ToString("O", CultureInfo.InvariantCulture))),
+            cancellationToken);
+
+    private static string WatermarkKey(string scope) => "reconcile.watermark." + scope;
 
     /// <summary>
     /// Jellyfin's own last-saved timestamp, in ticks, or null when it has none.

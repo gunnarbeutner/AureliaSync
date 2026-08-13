@@ -76,13 +76,29 @@ public sealed class LibraryEnumerator
     /// <param name="user">The user whose visibility applies.</param>
     /// <param name="kind">The item kind to enumerate.</param>
     /// <returns>Access-filtered identifiers, in protocol order.</returns>
-    public IReadOnlyList<Guid> EnumerateIds(User user, BaseItemKind kind)
+    public IReadOnlyList<Guid> EnumerateIds(User user, BaseItemKind kind) =>
+        EnumerateIds(user, kind, null);
+
+    /// <summary>
+    /// Enumerates identifiers, optionally only those Jellyfin has touched since a point in time.
+    /// </summary>
+    /// <remarks>
+    /// Letting Jellyfin apply the timestamp filter is the difference between reconciliation costing
+    /// a full library hydration and costing almost nothing: an unchanged item is never loaded at
+    /// all, rather than loaded and then found to be unchanged.
+    /// </remarks>
+    /// <param name="user">The user whose visibility applies.</param>
+    /// <param name="kind">The item kind to enumerate.</param>
+    /// <param name="changedSince">Only items saved at or after this time, or null for all.</param>
+    /// <returns>Access-filtered identifiers, in protocol order.</returns>
+    public IReadOnlyList<Guid> EnumerateIds(User user, BaseItemKind kind, DateTime? changedSince)
     {
         var query = new InternalItemsQuery(user)
         {
             Recursive = true,
             IncludeItemTypes = new[] { kind },
             IsVirtualItem = false,
+            MinDateLastSaved = changedSince,
             DtoOptions = new DtoOptions(false)
             {
                 EnableImages = false,
