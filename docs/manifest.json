@@ -6,6 +6,15 @@
     "category": "General",
     "overview": "Efficient library synchronisation for the Aurelia music client.",
     "description": "Gives the Aurelia music client a resumable, ordered, idempotent view of the Jellyfin music library: a stable initial snapshot followed by an ordered change stream, delivered as bounded NDJSON segments with cumulative acknowledgement and per-client checkpoints. The plugin only ever reads from Jellyfin.",
-    "versions": []
+    "versions": [
+      {
+        "version": "0.1.0.0",
+        "changelog": "- Let the 10.11 lane own pre-1.0 versions (1a1303e)\n- Publish Pages from main instead of from the release tag (28521c9)\n- Derive assembly version from the package version (2b7772f)\n- Add CI, release packaging, and the plugin manifest (d4a5a4b)\n- Add the status endpoint and service registration (bbb4fdd)\n- Add the plugin database and migrations (d44a979)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/gunnarbeutner/AureliaSync/releases/download/v0.1.0/aurelia-sync_0.1.0.0.zip",
+        "checksum": "f25405904239637b1f0365f3b0f8a642",
+        "timestamp": "2026-08-13T15:36:10Z"
+      }
+    ]
   }
 ]
