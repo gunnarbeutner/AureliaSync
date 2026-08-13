@@ -105,7 +105,7 @@ public class FixtureTests
         var allowed = new HashSet<string>(StringComparer.Ordinal)
         {
             WireKind.SegmentBegin, WireKind.SegmentEnd, WireKind.Error,
-            WireKind.ItemUpsert, WireKind.PlaylistReplace, WireKind.UserDataUpsert
+            WireKind.ItemUpsert, WireKind.PlaylistReplace, WireKind.UserDataUpsert, WireKind.ItemDelete
         };
 
         foreach (var (name, content) in FixtureBuilder.All())
@@ -167,6 +167,30 @@ public class FixtureTests
             .ToList();
 
         Assert.Equal(new[] { 0, 1 }, positions);
+    }
+
+    [Fact]
+    public void TheChangesFixtureUsesJournalCursorsAndCarriesATombstone()
+    {
+        var lines = Lines(FixtureBuilder.All()["changes-segment.ndjson"]).ToList();
+
+        using var begin = JsonDocument.Parse(lines[0]);
+        Assert.Equal("changes", begin.RootElement.GetProperty("mode").GetString());
+
+        // Journal cursors address a different sequence from snapshot ones and must decode as such.
+        foreach (var line in lines.Skip(1))
+        {
+            using var document = JsonDocument.Parse(line);
+            var cursor = document.RootElement.GetProperty("cursor").GetString();
+            Assert.True(Jellyfin.Plugin.AureliaSync.Streaming.Cursor.TryDecode(cursor, out var decoded));
+            Assert.Equal(Jellyfin.Plugin.AureliaSync.Streaming.Cursor.JournalKind, decoded.Kind);
+        }
+
+        // Tombstones appear only here, never in a snapshot.
+        Assert.Contains(lines, l => KindOf(l) == WireKind.ItemDelete);
+        Assert.DoesNotContain(
+            Lines(FixtureBuilder.All()["snapshot-complete.ndjson"]),
+            l => KindOf(l) == WireKind.ItemDelete);
     }
 
     [Fact]

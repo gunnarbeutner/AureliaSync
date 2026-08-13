@@ -26,9 +26,9 @@ needs in order to resume.
 Delivery is ordered and at-least-once. Replay is always safe: applying a record twice must produce
 the same result as applying it once.
 
-Protocol v1 implements snapshot delivery only. `mode` is always `snapshot`. The `changes` mode and
-the change journal that backs it are specified for a later version; a v1 server never returns
-`mode: "changes"`.
+Protocol v1 implements both modes. A client that has fully acknowledged a snapshot and whose
+position is still covered by the journal receives `mode: "changes"`; anything else receives
+`mode: "snapshot"`.
 
 ---
 
@@ -340,6 +340,26 @@ Because the client promotes its staged catalog only on the `caughtUp` segment, a
 part-way leaves inert staging rows. The next session gets a new generation and re-streams from the
 beginning; the client's staging writes are upserts, so replay is safe.
 
+### 6.1a Choosing between snapshot and changes
+
+`POST /sessions` returns `mode: "changes"` only when the client has fully acknowledged a snapshot
+**and** its position is still covered by the journal. Otherwise it gets a snapshot, and `state`
+carries why:
+
+| Reason | Meaning |
+|---|---|
+| `newClient` | No checkpoint on record |
+| `checkpointExpired` | The client was away long enough that its position was discarded |
+| `journalGap` | Records the client still needed were reclaimed |
+| `schemaChanged` | The negotiated wire schema differs from the one it last used |
+
+> **A gap is never silently skipped.** Resuming a client from the journal floor when its position
+> is below it would leave it believing it was current while missing everything in between. It takes
+> a fresh snapshot instead — expensive, and correct.
+
+A position of exactly `floor - 1` is still contiguous: the next record the client needs is the
+oldest one retained, so it is served changes rather than forced to resynchronise.
+
 ### 6.2 An unknown generation is not an error
 
 The client sends **only** `checkpointToken` when opening a session — never a cursor. The token must
@@ -442,11 +462,15 @@ coordinating with the client.
 | `item.upsert` | yes | Create or replace one entity; `entityType` ∈ `track` `album` `artist` `playlist` `genre` |
 | `playlist.replace` | yes | **One playlist entry**, not a whole playlist (§8.4) |
 | `userData.upsert` | yes | Per-user state for one item |
-| `item.delete` | no | Tombstone. **Never emitted in snapshot mode** — snapshot delivery has no removal channel and the client silently drops these |
+| `item.delete` | changes only | Tombstone. **Never emitted in snapshot mode** — snapshot delivery has no removal channel and the client drops these. In changes mode they must be applied |
 | `relationship.replace` | reserved | Accepted and ignored |
 | `control.reconcile` | reserved | Accepted and ignored |
 
 ### 8.2 Ordering
+
+In **changes** mode records are emitted in journal order — the order the changes happened — and
+cursors address journal sequences rather than snapshot positions. The ordering below applies to
+snapshot delivery.
 
 Records are emitted in a single global ordinal order:
 
@@ -596,7 +620,7 @@ in v1.
 
 | Version | Status | Notes |
 |---|---|---|
-| 1 | current | Snapshot delivery. `mode` is always `snapshot`; `changes` is reserved |
+| 1 | current | Snapshot and change delivery. `item.delete` is emitted in changes mode; `relationship.replace` and `control.reconcile` remain reserved |
 
 Unknown **optional** fields are ignored, so the server may add them without a version bump. Adding
 a record `kind`, changing a key, or changing a field's meaning requires a new wire schema version,

@@ -41,8 +41,82 @@ internal static class FixtureBuilder
         {
             ["snapshot-complete.ndjson"] = CompleteSnapshot(),
             ["snapshot-partial.ndjson"] = PartialSegment(),
-            ["stream-error.ndjson"] = ErroredSegment()
+            ["stream-error.ndjson"] = ErroredSegment(),
+            ["changes-segment.ndjson"] = ChangesSegment()
         };
+
+    /// <summary>
+    /// A change session: journal cursors, a tombstone, and a user-data clear.
+    /// </summary>
+    private static string ChangesSegment()
+    {
+        PayloadBytes.Clear();
+        var lines = new List<string>();
+        var sequence = 4200L;
+
+        string Next() => new Cursor(Cursor.JournalKind, 0, ++sequence).Encode();
+
+        lines.Add(Serialize(new SegmentBegin
+        {
+            SessionId = "kQ7xample000000000000000000000000000000000",
+            Mode = "changes",
+            Generation = Generation,
+            AfterCursor = new Cursor(Cursor.JournalKind, 0, sequence).Encode(),
+            ServerTime = ServerTime
+        }));
+
+        // An ordinary edit: the same shape a snapshot would carry for this track.
+        lines.Add(Record(Next(), sequence, WireKind.ItemUpsert, WireEntityType.Track, TrackOneId, new TrackPayload
+        {
+            Id = TrackOneId,
+            Name = "Hunter (2026 remaster)",
+            ArtistName = "Björk",
+            ArtistId = ArtistId,
+            ArtistIDs = new[] { ArtistId },
+            AlbumName = "Homogenic",
+            AlbumId = AlbumId,
+            Duration = 244.28,
+            IndexNumber = 1,
+            ParentIndexNumber = 1,
+            AlbumImageTag = "albumtag"
+        }));
+
+        // A tombstone. Only ever sent in changes mode; the payload carries nothing but the id,
+        // because by now there is nothing left to describe.
+        lines.Add(Record(Next(), sequence, WireKind.ItemDelete, WireEntityType.Track, TrackTwoId,
+            new DeletedPayload { Id = TrackTwoId }));
+
+        // Clearing user data states the cleared values explicitly: the client applies these with
+        // COALESCE, so omitting them would leave the previous values in place.
+        lines.Add(Record(Next(), sequence, WireKind.UserDataUpsert, null, TrackOneId, new UserDataPayload
+        {
+            Id = TrackOneId,
+            IsFavorite = false,
+            PlayCount = 0,
+            PlaybackPositionTicks = 0
+        }));
+
+        lines.Add(Serialize(new SegmentEnd
+        {
+            Cursor = new Cursor(Cursor.JournalKind, 0, sequence).Encode(),
+            RecordCount = lines.Count - 1,
+            ByteCount = 0,
+            CaughtUp = true,
+            SessionUpperBound = sequence,
+            AggregateChecksum = Digest(),
+            StopReason = "upperBound",
+            NextAfter = new Cursor(Cursor.JournalKind, 0, sequence).Encode()
+        }));
+
+        return string.Join('\n', lines) + "\n";
+    }
+
+    /// <summary>The payload of a tombstone: the identifier and nothing else.</summary>
+    private sealed class DeletedPayload
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("id")]
+        public string Id { get; set; } = string.Empty;
+    }
 
     /// <summary>
     /// A whole tiny library delivered in one segment, ending with <c>caughtUp: true</c>.
