@@ -1,10 +1,16 @@
 <Project>
 
   <PropertyGroup>
-    <!-- CI overrides these: -p:Version=$V -p:AssemblyVersion=$V -p:FileVersion=$V -->
+    <!--
+      Packaging passes -p:Version=<release version>, which arrives as an MSBuild global property
+      and so wins over the default below. AssemblyVersion and FileVersion must be derived from it
+      rather than pinned: Jellyfin reads the assembly version for Plugin.Version and compares it
+      when deciding whether an update applies, so a hardcoded 0.0.0.0 would report the wrong
+      version and break the upgrade path.
+    -->
     <Version>0.0.0.0</Version>
-    <AssemblyVersion>0.0.0.0</AssemblyVersion>
-    <FileVersion>0.0.0.0</FileVersion>
+    <AssemblyVersion>$(Version)</AssemblyVersion>
+    <FileVersion>$(Version)</FileVersion>
 
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
