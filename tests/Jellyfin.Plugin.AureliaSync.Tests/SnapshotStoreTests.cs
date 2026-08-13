@@ -79,6 +79,29 @@ public sealed class SnapshotStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task AFullBuildCarriesNoRepairWatermark()
+    {
+        var generation = await _store.CreateAsync(UserA, 1, 0);
+
+        var info = _store.Get(generation)!;
+        Assert.Null(info.RepairSince);
+        Assert.False(info.IsRepair);
+    }
+
+    [Fact]
+    public async Task ARepairRemembersWhatItCoversFrom()
+    {
+        // The watermark decides which items a repair projects, so losing it in storage would turn a
+        // repair into a snapshot that silently omitted almost everything.
+        var since = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
+        var generation = await _store.CreateAsync(UserA, 1, 0, since);
+
+        var info = _store.Get(generation)!;
+        Assert.True(info.IsRepair);
+        Assert.Equal(since, info.RepairSince);
+    }
+
+    [Fact]
     public async Task NothingIsDeliverableUntilTheWatermarkIsPublished()
     {
         // The watermark is the only thing standing between a client and a half-written range, so

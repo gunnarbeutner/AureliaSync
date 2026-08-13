@@ -30,6 +30,11 @@ public static class WireKind
     /// <summary>Tombstone. Reserved: never emitted in snapshot mode.</summary>
     public const string ItemDelete = "item.delete";
 
+    /// <summary>
+    /// One chunk of the identifiers a repaired catalog should retain. Only emitted in repair mode.
+    /// </summary>
+    public const string CatalogManifest = "catalog.manifest";
+
     /// <summary>Reserved no-op the client accepts and ignores.</summary>
     public const string RelationshipReplace = "relationship.replace";
 

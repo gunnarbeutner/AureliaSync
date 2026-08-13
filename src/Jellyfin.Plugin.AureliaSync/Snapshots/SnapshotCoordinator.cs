@@ -150,7 +150,8 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
     /// </summary>
     /// <remarks>
     /// Used to rate limit builds rather than sessions. Mirrors the reuse rules in
-    /// <see cref="EnsureSnapshotAsync"/>, so a request that would join an existing build or reuse a
+    /// <see cref="EnsureSnapshotAsync(Guid, int, bool, DateTimeOffset?, CancellationToken)"/>, so a
+    /// request that would join an existing build or reuse a
     /// recent snapshot is correctly reported as free.
     /// </remarks>
     /// <param name="userId">The user.</param>
@@ -196,12 +197,33 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
         Guid userId,
         int wireSchema,
         bool forceRebuild,
+        CancellationToken cancellationToken = default) =>
+        await EnsureSnapshotAsync(userId, wireSchema, forceRebuild, null, cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Ensures a snapshot exists, optionally as a repair covering only recent changes.
+    /// </summary>
+    /// <param name="userId">The user.</param>
+    /// <param name="wireSchema">The negotiated wire schema.</param>
+    /// <param name="forceRebuild">Whether to ignore any reusable snapshot.</param>
+    /// <param name="repairSince">
+    /// When set, build a repair from this instant instead of a full snapshot. A repair is never
+    /// reused for another client, because it is only meaningful relative to one client's position.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The snapshot that will be, or already is, available.</returns>
+    public async Task<SnapshotInfo> EnsureSnapshotAsync(
+        Guid userId,
+        int wireSchema,
+        bool forceRebuild,
+        DateTimeOffset? repairSince,
         CancellationToken cancellationToken = default)
     {
         var configuration = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         var store = _runtime.Snapshots;
 
-        if (!forceRebuild)
+        if (!forceRebuild && repairSince is null)
         {
             var window = DateTimeOffset.UtcNow.AddMinutes(-Math.Max(0, configuration.SnapshotReuseWindowMinutes));
             if (store.FindReusable(userId, wireSchema, window) is { } reusable)
@@ -225,7 +247,7 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
         // losing it in the gap. Reading it afterwards would silently drop that window.
         var baseline = _runtime.Journal.Head();
 
-        var generation = await store.CreateAsync(userId, wireSchema, baseline, cancellationToken)
+        var generation = await store.CreateAsync(userId, wireSchema, baseline, repairSince, cancellationToken)
             .ConfigureAwait(false);
 
         if (_queued.TryAdd(userId, 0))
@@ -283,7 +305,8 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
 
         try
         {
-            await builder.BuildAsync(userId, pending.Generation, configuration, cancellationToken)
+            await builder
+                .BuildAsync(userId, pending.Generation, configuration, pending.RepairSince, cancellationToken)
                 .ConfigureAwait(false);
 
             // A build writes roughly a megabyte per thousand records; without this the write-ahead

@@ -45,6 +45,12 @@ namespace Jellyfin.Plugin.AureliaSync.Snapshots;
 /// </remarks>
 public sealed class SnapshotBuilder
 {
+    /// <summary>
+    /// Identifiers per manifest record. Large enough that a 30,000-track library costs about thirty
+    /// records rather than thirty thousand, small enough that one record stays well inside a segment.
+    /// </summary>
+    private const int ManifestChunkSize = 1_000;
+
     private readonly IUserManager _userManager;
     private readonly SnapshotStore _store;
     private readonly LibraryEnumerator _enumerator;
@@ -79,12 +85,17 @@ public sealed class SnapshotBuilder
     /// <param name="userId">The user whose visible library to capture.</param>
     /// <param name="generation">The snapshot generation to fill, already created.</param>
     /// <param name="configuration">Plugin configuration.</param>
+    /// <param name="repairSince">
+    /// When set, project only items Jellyfin has saved since this instant and emit a manifest of
+    /// surviving identifiers, rather than the whole catalog.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The number of records written.</returns>
     public async Task<long> BuildAsync(
         Guid userId,
         long generation,
         PluginConfiguration configuration,
+        DateTimeOffset? repairSince,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -113,8 +124,27 @@ public sealed class SnapshotBuilder
             trackIds.Count,
             playlists.Count);
 
+        // ---- A repair re-sends only what changed, but must still account for what vanished. ----
+        //
+        // Albums, artists and genres are always sent in full: they are a tenth of the catalog, they
+        // are hydrated anyway to resolve track credits and artwork, and their payloads carry derived
+        // counts that cannot be computed from a subset. The saving that matters is the tracks.
+        var emitTrackIds = repairSince is { } since
+            ? _enumerator.EnumerateIds(user, BaseItemKind.Audio, since.UtcDateTime)
+            : trackIds;
+
+        if (repairSince is not null)
+        {
+            _logger.LogInformation(
+                "AureliaSync: snapshot {Generation} is a repair from {Since} — {Changed} of {Total} tracks changed",
+                generation,
+                repairSince,
+                emitTrackIds.Count,
+                trackIds.Count);
+        }
+
         // ---- Reserve one ordinal range per phase, in the order rows can be produced. ----
-        var ordinals = new OrdinalRanges(genres.Count, artists.Count, albumIds.Count, trackIds.Count);
+        var ordinals = new OrdinalRanges(genres.Count, artists.Count, albumIds.Count, emitTrackIds.Count);
 
         var artistIdsByName = LibraryEnumerator.ArtistIdsByName(artists);
         var albumSummaries = new Dictionary<Guid, AlbumSummary>();
@@ -166,14 +196,21 @@ public sealed class SnapshotBuilder
         }
 
         // ---- Tracks: written straight into their reserved range, counting per album as we go. ----
-        await _store.SetProgressAsync(generation, "track", 0, trackIds.Count, cancellationToken).ConfigureAwait(false);
+        await _store.SetProgressAsync(generation, "track", 0, emitTrackIds.Count, cancellationToken)
+            .ConfigureAwait(false);
         var albumIdSet = albumIds.ToHashSet();
-        var trackCountByAlbum = new Dictionary<Guid, int>();
+
+        // A full build counts tracks per album as it hydrates them. A repair never sees the
+        // unchanged ones, so it asks Jellyfin to count instead — cheap, because nothing is loaded.
+        var trackCountByAlbum = repairSince is not null
+            ? new Dictionary<Guid, int>(_enumerator.TrackCountsByAlbum(user, albumIds))
+            : new Dictionary<Guid, int>();
+
         var trackFactsById = new Dictionary<Guid, ItemFacts>();
         var trackOrdinal = ordinals.TrackStart;
         long done = 0;
 
-        foreach (var batch in LibraryEnumerator.Batch(trackIds, batchSize))
+        foreach (var batch in LibraryEnumerator.Batch(emitTrackIds, batchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -187,7 +224,7 @@ public sealed class SnapshotBuilder
                 rows.Add(NewRow(++trackOrdinal, WireKind.ItemUpsert, WireEntityType.Track, payload.Id, payload));
                 Collect(projector, facts, userData);
 
-                if (facts.AlbumId is { } albumId)
+                if (facts.AlbumId is { } albumId && repairSince is null)
                 {
                     trackCountByAlbum[albumId] = trackCountByAlbum.GetValueOrDefault(albumId) + 1;
                 }
@@ -207,7 +244,7 @@ public sealed class SnapshotBuilder
             await _store.SetStreamableThroughAsync(generation, trackOrdinal, cancellationToken)
                 .ConfigureAwait(false);
 
-            await _store.SetProgressAsync(generation, "track", done, trackIds.Count, cancellationToken)
+            await _store.SetProgressAsync(generation, "track", done, emitTrackIds.Count, cancellationToken)
                 .ConfigureAwait(false);
             await ThrottleAsync(configuration, cancellationToken).ConfigureAwait(false);
         }
@@ -306,6 +343,48 @@ public sealed class SnapshotBuilder
                 .ConfigureAwait(false);
 
             Collect(projector, playlistFacts, userData);
+        }
+
+        // ---- A repair lists what survives, because a deletion leaves no timestamp to find it by. ----
+        if (repairSince is not null)
+        {
+            var manifests = new (string EntityType, IEnumerable<Guid> Ids)[]
+            {
+                (WireEntityType.Track, trackIds),
+                (WireEntityType.Album, albumIds),
+                (WireEntityType.Artist, artists.Select(a => a.Item.Id)),
+                (WireEntityType.Genre, genres.Select(g => g.Item.Id)),
+                (WireEntityType.Playlist, playlists.Select(p => p.Id))
+            };
+
+            await _store.SetProgressAsync(generation, "manifest", 0, manifests.Length, cancellationToken)
+                .ConfigureAwait(false);
+
+            var chunk = 0;
+            foreach (var (entityType, ids) in manifests)
+            {
+                foreach (var page in ids.Chunk(ManifestChunkSize))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var payload = new ManifestPayload
+                    {
+                        Id = string.Format(CultureInfo.InvariantCulture, "manifest-{0}", chunk++),
+                        EntityType = entityType,
+                        Ids = page.Select(id => id.ToString("N")).ToList()
+                    };
+
+                    var manifestRows = new List<SnapshotRow>
+                    {
+                        NewRow(++tailOrdinal, WireKind.CatalogManifest, entityType, payload.Id, payload)
+                    };
+
+                    await _store.AppendAsync(generation, manifestRows, cancellationToken).ConfigureAwait(false);
+                    written += manifestRows.Count;
+                    await _store.SetStreamableThroughAsync(generation, tailOrdinal, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
         }
 
         // ---- User data last, so favourites land on rows that already exist. ----

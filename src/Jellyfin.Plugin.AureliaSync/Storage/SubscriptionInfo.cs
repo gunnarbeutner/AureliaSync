@@ -1,3 +1,5 @@
+using System;
+
 namespace Jellyfin.Plugin.AureliaSync.Storage;
 
 /// <summary>
@@ -32,6 +34,16 @@ public sealed record SubscriptionInfo
 
     /// <summary>Gets why a fresh snapshot is required, when one is.</summary>
     public string? Reason { get; init; }
+
+    /// <summary>
+    /// Gets when this client last acknowledged, or null if it never has.
+    /// </summary>
+    /// <remarks>
+    /// This is the watermark a repair builds from: everything Jellyfin has saved since the client
+    /// last confirmed a durable position is what it missed. A client that has never acknowledged has
+    /// no such point, so it can only be given a full snapshot.
+    /// </remarks>
+    public DateTimeOffset? LastAckAt { get; init; }
 
     /// <summary>
     /// Gets a value indicating whether this client can be served changes rather than a snapshot.

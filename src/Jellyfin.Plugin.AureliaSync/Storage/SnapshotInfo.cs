@@ -92,4 +92,17 @@ public sealed record SnapshotInfo
 
     /// <summary>Gets a value indicating whether any row can be delivered yet.</summary>
     public bool HasDeliverableRows => StreamableThrough > 0;
+
+    /// <summary>
+    /// Gets the instant a repair build covers from, or null for a full snapshot.
+    /// </summary>
+    /// <remarks>
+    /// A repair projects only items Jellyfin has saved since this point and lists the identifiers of
+    /// everything that survives, so a client that fell out of journal retention can be brought
+    /// current without re-receiving a catalog it mostly already has.
+    /// </remarks>
+    public DateTimeOffset? RepairSince { get; init; }
+
+    /// <summary>Gets a value indicating whether this build is a repair rather than a full snapshot.</summary>
+    public bool IsRepair => RepairSince is not null;
 }

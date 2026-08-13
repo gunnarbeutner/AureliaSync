@@ -104,6 +104,24 @@ public class PluginConfiguration : BasePluginConfiguration
     public int StreamWaitSeconds { get; set; } = 15;
 
     /// <summary>
+    /// Gets or sets a value indicating whether a client that has fallen out of journal retention is
+    /// repaired rather than sent a fresh catalog.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A repair sends only items Jellyfin has saved since the client last acknowledged, plus a
+    /// manifest of surviving identifiers so it can prune what was deleted while it was away. On a
+    /// 30,000-track library that is a fraction of the sixteen megabytes a full snapshot costs.
+    /// </para>
+    /// <para>
+    /// It rests on <c>DateLastSaved</c> being moved for every change that matters, which is the same
+    /// assumption reconciliation's fast path makes. Turn this off to force a full snapshot on every
+    /// gap if that assumption is ever shown to be wrong for a particular library.
+    /// </para>
+    /// </remarks>
+    public bool EnableGapRepair { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the maximum number of snapshot builds one user may trigger per hour.
     /// </summary>
     /// <remarks>

@@ -16,7 +16,7 @@ public sealed class SnapshotStore
         """
         SELECT generation, user_id, state, baseline_sequence, wire_schema, row_count, byte_count,
                checksum, phase, phase_done, phase_total, error_code, error_detail,
-               created_at, completed_at, expires_at, streamable_through
+               created_at, completed_at, expires_at, streamable_through, repair_since
           FROM snapshots
         """;
 
@@ -44,6 +44,25 @@ public sealed class SnapshotStore
         int wireSchema,
         long baselineSequence,
         CancellationToken cancellationToken = default) =>
+        CreateAsync(userId, wireSchema, baselineSequence, null, cancellationToken);
+
+    /// <summary>
+    /// Starts a new snapshot, optionally as a repair.
+    /// </summary>
+    /// <param name="userId">Owning user.</param>
+    /// <param name="wireSchema">Wire schema the payloads will be written for.</param>
+    /// <param name="baselineSequence">Journal position at the moment the snapshot begins.</param>
+    /// <param name="repairSince">
+    /// When set, build a repair covering changes from this instant rather than a full snapshot.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The new generation.</returns>
+    public Task<long> CreateAsync(
+        Guid userId,
+        int wireSchema,
+        long baselineSequence,
+        DateTimeOffset? repairSince,
+        CancellationToken cancellationToken = default) =>
         _database.WriteAsync(
             (connection, transaction) =>
             {
@@ -51,14 +70,17 @@ public sealed class SnapshotStore
                 command.Transaction = transaction;
                 command.CommandText =
                     """
-                    INSERT INTO snapshots (user_id, state, baseline_sequence, wire_schema, created_at)
-                    VALUES ($user, 'building', $baseline, $schema, $now);
+                    INSERT INTO snapshots (user_id, state, baseline_sequence, wire_schema, created_at, repair_since)
+                    VALUES ($user, 'building', $baseline, $schema, $now, $repair);
                     SELECT last_insert_rowid();
                     """;
                 command.Parameters.AddWithValue("$user", userId.ToString("N"));
                 command.Parameters.AddWithValue("$baseline", baselineSequence);
                 command.Parameters.AddWithValue("$schema", wireSchema);
                 command.Parameters.AddWithValue("$now", Now());
+                command.Parameters.AddWithValue(
+                    "$repair",
+                    repairSince is { } since ? since.ToUnixTimeMilliseconds() : DBNull.Value);
 
                 return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
             },
@@ -492,6 +514,7 @@ public sealed class SnapshotStore
         CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
         CompletedAt = ToOffset(reader.GetValue(14)),
         ExpiresAt = ToOffset(reader.GetValue(15)),
-        StreamableThrough = reader.GetInt64(16)
+        StreamableThrough = reader.GetInt64(16),
+        RepairSince = ToOffset(reader.GetValue(17))
     };
 }

@@ -213,8 +213,20 @@ public class SyncSessionsController : ControllerBase
             }
         }
 
+        // A client that fell out of journal retention does not need the catalog again — it needs the
+        // difference. Everything Jellyfin has saved since its last acknowledgement is what it
+        // missed, and a manifest of surviving identifiers covers the deletions a timestamp scan
+        // cannot see. A client that never acknowledged has no such watermark and gets the full
+        // catalog, which is the only correct answer for it.
+        // Rewound generously. An item saved in the same moment the client acknowledged could
+        // otherwise fall on the wrong side of the boundary, and re-sending a handful of items costs
+        // nothing next to silently omitting one.
+        var repairSince = ShouldRepair(reason, userId, request, configuration)
+            ? _runtime.Sessions.GetSubscription(userId, request.ClientId)?.LastAckAt?.AddMinutes(-5)
+            : null;
+
         var snapshot = await _coordinator
-            .EnsureSnapshotAsync(userId, schemaVersion, request.Reset, cancellationToken)
+            .EnsureSnapshotAsync(userId, schemaVersion, request.Reset, repairSince, cancellationToken)
             .ConfigureAwait(false);
 
         // Resume only within the same generation. A checkpoint from an older snapshot describes
@@ -227,7 +239,10 @@ public class SyncSessionsController : ControllerBase
             Id = SessionStore.NewSessionId(),
             UserId = userId,
             ClientId = request.ClientId,
-            Mode = "snapshot",
+
+            // A repair is applied by merging, a snapshot by replacing, so the client has to be able
+            // to tell them apart before it processes the first record.
+            Mode = snapshot.IsRepair ? "repair" : "snapshot",
             ProtocolVersion = protocolVersion,
             WireSchema = schemaVersion,
             Generation = snapshot.Generation,
@@ -714,6 +729,30 @@ public class SyncSessionsController : ControllerBase
     /// costs the client its whole catalog, so which one happened is the difference between
     /// diagnosing a problem and guessing at it.
     /// </remarks>
+    /// <summary>
+    /// Decides whether a client can be repaired rather than resnapshotted.
+    /// </summary>
+    /// <remarks>
+    /// Only a journal gap qualifies. Every other reason for falling back to a snapshot means the
+    /// client's position is not merely stale but unknown — a new client has nothing to repair, a
+    /// schema change invalidates the payloads it holds, and an incomplete snapshot means it never
+    /// had a coherent catalog to begin with. Repairing any of those would leave the client believing
+    /// it was current when it was not.
+    /// </remarks>
+    private bool ShouldRepair(
+        string reason, Guid userId, CreateSessionRequest request, PluginConfiguration configuration)
+    {
+        if (!configuration.EnableGapRepair
+            || request.Reset
+            || !string.Equals(reason, SessionReason.JournalGap, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var subscription = _runtime.Sessions.GetSubscription(userId, request.ClientId);
+        return subscription is { SnapshotAcked: true, LastAckAt: not null };
+    }
+
     private string SnapshotReason(Guid userId, CreateSessionRequest request, int schemaVersion)
     {
         if (request.Reset)

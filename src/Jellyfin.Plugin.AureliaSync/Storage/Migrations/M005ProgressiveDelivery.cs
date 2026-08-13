@@ -34,6 +34,14 @@ public sealed class M005ProgressiveDelivery : IMigration
             "ALTER TABLE snapshots ADD COLUMN streamable_through INTEGER NOT NULL DEFAULT 0;",
             transaction);
 
+        // Non-null marks this build as a repair: only items saved at or after this instant are
+        // projected, and a manifest of surviving identifiers is emitted so the client can prune what
+        // was deleted while it was away.
+        SyncDatabase.Execute(
+            connection,
+            "ALTER TABLE snapshots ADD COLUMN repair_since INTEGER;",
+            transaction);
+
         // Snapshots that finished under the old scheme are wholly deliverable, and their ordinal
         // layout differs from the new one. Publishing their true maximum keeps them streamable
         // rather than stranding clients mid-catalog behind a watermark of zero.

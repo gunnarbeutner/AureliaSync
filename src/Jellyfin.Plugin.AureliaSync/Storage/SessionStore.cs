@@ -437,7 +437,7 @@ public sealed class SessionStore
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT ack_sequence, snapshot_generation, snapshot_acked, state, reason
+            SELECT ack_sequence, snapshot_generation, snapshot_acked, state, reason, last_ack_at
               FROM subscriptions WHERE user_id = $user AND client_id = $client;
             """;
         command.Parameters.AddWithValue("$user", userId.ToString("N"));
@@ -455,7 +455,10 @@ public sealed class SessionStore
             SnapshotGeneration = reader.IsDBNull(1) ? null : reader.GetInt64(1),
             SnapshotAcked = reader.GetInt32(2) == 1,
             State = reader.GetString(3),
-            Reason = reader.IsDBNull(4) ? null : reader.GetString(4)
+            Reason = reader.IsDBNull(4) ? null : reader.GetString(4),
+            LastAckAt = reader.IsDBNull(5)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5))
         };
     }
 
