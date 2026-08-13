@@ -166,14 +166,25 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
             }
         }
 
-        var generation = await store.CreateAsync(userId, wireSchema, 0, cancellationToken).ConfigureAwait(false);
+        // The journal head is read BEFORE the build is queued, and therefore before enumeration
+        // begins. Everything that changes during the minutes a build takes lands at a strictly
+        // higher sequence, so the client receives it after promoting the snapshot rather than
+        // losing it in the gap. Reading it afterwards would silently drop that window.
+        var baseline = _runtime.Journal.Head();
+
+        var generation = await store.CreateAsync(userId, wireSchema, baseline, cancellationToken)
+            .ConfigureAwait(false);
 
         if (_queued.TryAdd(userId, 0))
         {
             await _buildQueue.Writer.WriteAsync(userId, cancellationToken).ConfigureAwait(false);
         }
 
-        _logger.LogInformation("AureliaSync: queued snapshot {Generation} for {User}", generation, userId);
+        _logger.LogInformation(
+            "AureliaSync: queued snapshot {Generation} for {User} at journal baseline {Baseline}",
+            generation,
+            userId,
+            baseline);
         return store.Get(generation)!;
     }
 
