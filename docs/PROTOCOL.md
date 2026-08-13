@@ -318,14 +318,23 @@ be made to wait for that, and cannot be told to come back later:
 - its drain loop ends **only** when a segment reports `caughtUp: true`, with no zero-record or
   same-cursor guard, so a server that makes no progress spins it.
 
-Therefore `POST /sessions` returns immediately and `/stream` serves whatever has been materialised
-so far:
+Therefore `POST /sessions` returns immediately, and `/stream` answers with a **valid but empty
+segment** while the snapshot is still being built:
 
-- Serve committed rows with ordinal greater than `after`.
-- If none are available yet and the build is still running, **wait server-side** for more (bounded
-  well below the client's timeout) rather than returning an empty segment immediately.
-- Serve only rows at or below the builder's committed watermark, never a partially written batch.
+- If the snapshot is not ready, wait server-side for it (bounded well below the client's timeout),
+  then return a properly framed segment containing zero records, `caughtUp: false`, and a cursor
+  echoing the requested position.
+- Once it is ready, serve records normally.
 - **Never set `caughtUp` while the snapshot is incomplete.**
+
+> **Clients must therefore tolerate a zero-record segment.** It is not an error and not the end of
+> the stream; it means "still working, ask again". A drain loop should keep going on
+> `caughtUp: false` regardless of record count.
+
+A snapshot is served only once it is complete. Serving rows as they are materialised was
+considered and rejected: album track counts are only known after the tracks are counted, so an
+album record streamed early would carry a count that is later corrected, and a client that already
+received it would never see the correction.
 
 Because the client promotes its staged catalog only on the `caughtUp` segment, a build that fails
 part-way leaves inert staging rows. The next session gets a new generation and re-streams from the

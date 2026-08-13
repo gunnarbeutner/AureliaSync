@@ -1,0 +1,421 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
+
+namespace Jellyfin.Plugin.AureliaSync.Storage;
+
+/// <summary>
+/// Persists materialised snapshots and reads them back for delivery.
+/// </summary>
+public sealed class SnapshotStore
+{
+    private const string SelectColumns =
+        """
+        SELECT generation, user_id, state, baseline_sequence, wire_schema, row_count, byte_count,
+               checksum, phase, phase_done, phase_total, error_code, error_detail,
+               created_at, completed_at, expires_at
+          FROM snapshots
+        """;
+
+    private readonly SyncDatabase _database;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SnapshotStore"/> class.
+    /// </summary>
+    /// <param name="database">The plugin database.</param>
+    public SnapshotStore(SyncDatabase database)
+    {
+        _database = database;
+    }
+
+    /// <summary>
+    /// Starts a new snapshot in the <c>building</c> state.
+    /// </summary>
+    /// <param name="userId">Owning user.</param>
+    /// <param name="wireSchema">Wire schema the payloads will be written for.</param>
+    /// <param name="baselineSequence">Journal position at the moment the snapshot begins.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The new generation.</returns>
+    public Task<long> CreateAsync(
+        Guid userId,
+        int wireSchema,
+        long baselineSequence,
+        CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) =>
+            {
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    INSERT INTO snapshots (user_id, state, baseline_sequence, wire_schema, created_at)
+                    VALUES ($user, 'building', $baseline, $schema, $now);
+                    SELECT last_insert_rowid();
+                    """;
+                command.Parameters.AddWithValue("$user", userId.ToString("N"));
+                command.Parameters.AddWithValue("$baseline", baselineSequence);
+                command.Parameters.AddWithValue("$schema", wireSchema);
+                command.Parameters.AddWithValue("$now", Now());
+
+                return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Appends a batch of rows.
+    /// </summary>
+    /// <remarks>
+    /// One transaction per batch, with a single prepared statement reused across the batch. Holding
+    /// one transaction open for a whole 34,500-row build would block every reader for minutes and
+    /// grow the write-ahead log to the size of the snapshot.
+    /// </remarks>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="rows">Rows to append, in ascending ordinal order.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the batch is committed.</returns>
+    public Task AppendAsync(
+        long generation,
+        IReadOnlyList<SnapshotRow> rows,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+
+        if (rows.Count == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        return _database.WriteAsync(
+            (connection, transaction) =>
+            {
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    INSERT INTO snapshot_rows (generation, ordinal, kind, entity_type, entity_id, payload, checksum)
+                    VALUES ($generation, $ordinal, $kind, $entityType, $entityId, $payload, $checksum);
+                    """;
+
+                var generationParameter = command.Parameters.Add("$generation", SqliteType.Integer);
+                var ordinal = command.Parameters.Add("$ordinal", SqliteType.Integer);
+                var kind = command.Parameters.Add("$kind", SqliteType.Text);
+                var entityType = command.Parameters.Add("$entityType", SqliteType.Text);
+                var entityId = command.Parameters.Add("$entityId", SqliteType.Text);
+                var payload = command.Parameters.Add("$payload", SqliteType.Blob);
+                var checksum = command.Parameters.Add("$checksum", SqliteType.Text);
+
+                generationParameter.Value = generation;
+                command.Prepare();
+
+                foreach (var row in rows)
+                {
+                    ordinal.Value = row.Ordinal;
+                    kind.Value = row.Kind;
+                    entityType.Value = (object?)row.EntityType ?? DBNull.Value;
+                    entityId.Value = row.EntityId;
+                    payload.Value = row.Payload;
+                    checksum.Value = (object?)row.Checksum ?? DBNull.Value;
+                    command.ExecuteNonQuery();
+                }
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Records build progress so it can be reported while a snapshot is being materialised.
+    /// </summary>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="phase">Phase name.</param>
+    /// <param name="done">Items completed in this phase.</param>
+    /// <param name="total">Items expected in this phase.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the progress is recorded.</returns>
+    public Task SetProgressAsync(
+        long generation,
+        string phase,
+        long done,
+        long total,
+        CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                UPDATE snapshots SET phase = $phase, phase_done = $done, phase_total = $total
+                 WHERE generation = $generation;
+                """,
+                ("$phase", phase),
+                ("$done", done),
+                ("$total", total),
+                ("$generation", generation)),
+            cancellationToken);
+
+    /// <summary>
+    /// Marks a snapshot complete and streamable.
+    /// </summary>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="rowCount">Total rows written.</param>
+    /// <param name="byteCount">Total payload bytes.</param>
+    /// <param name="checksum">Digest over all rows in order.</param>
+    /// <param name="expiresAt">When the snapshot may be reclaimed.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the snapshot is marked complete.</returns>
+    public Task CompleteAsync(
+        long generation,
+        long rowCount,
+        long byteCount,
+        string checksum,
+        DateTimeOffset expiresAt,
+        CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                UPDATE snapshots
+                   SET state = 'complete', row_count = $rows, byte_count = $bytes,
+                       checksum = $checksum, completed_at = $now, expires_at = $expires,
+                       phase = NULL, error_code = NULL, error_detail = NULL
+                 WHERE generation = $generation AND state = 'building';
+                """,
+                ("$rows", rowCount),
+                ("$bytes", byteCount),
+                ("$checksum", checksum),
+                ("$now", Now()),
+                ("$expires", expiresAt.ToUnixTimeMilliseconds()),
+                ("$generation", generation)),
+            cancellationToken);
+
+    /// <summary>
+    /// Marks a snapshot failed.
+    /// </summary>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="errorCode">Machine-readable reason.</param>
+    /// <param name="errorDetail">Administrator-facing detail.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the failure is recorded.</returns>
+    public Task FailAsync(
+        long generation,
+        string errorCode,
+        string? errorDetail,
+        CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                UPDATE snapshots
+                   SET state = 'failed', error_code = $code, error_detail = $detail
+                 WHERE generation = $generation AND state = 'building';
+                """,
+                ("$code", errorCode),
+                ("$detail", (object?)errorDetail ?? DBNull.Value),
+                ("$generation", generation)),
+            cancellationToken);
+
+    /// <summary>
+    /// Invalidates every snapshot left mid-build, and discards their partial rows.
+    /// </summary>
+    /// <remarks>
+    /// Called at startup. A <c>building</c> row that survives a restart has no worker behind it and
+    /// will never complete; leaving it would let a session wait on a snapshot that is never coming.
+    /// Marking rather than deleting keeps the failure visible in diagnostics.
+    /// </remarks>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>How many snapshots were invalidated.</returns>
+    public Task<int> InvalidateInterruptedBuildsAsync(CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) =>
+            {
+                SyncDatabase.ExecuteWithParameters(
+                    connection,
+                    transaction,
+                    """
+                    DELETE FROM snapshot_rows
+                     WHERE generation IN (SELECT generation FROM snapshots WHERE state = 'building');
+                    """);
+
+                return SyncDatabase.ExecuteWithParameters(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE snapshots
+                       SET state = 'invalidated', error_code = 'serverRestart',
+                           error_detail = 'The server restarted while this snapshot was being built.'
+                     WHERE state = 'building';
+                    """);
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Deletes a snapshot and its rows.
+    /// </summary>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the snapshot is gone.</returns>
+    public Task DeleteAsync(long generation, CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) =>
+            {
+                SyncDatabase.ExecuteWithParameters(
+                    connection,
+                    transaction,
+                    "DELETE FROM snapshot_rows WHERE generation = $generation;",
+                    ("$generation", generation));
+
+                SyncDatabase.ExecuteWithParameters(
+                    connection,
+                    transaction,
+                    "DELETE FROM snapshots WHERE generation = $generation;",
+                    ("$generation", generation));
+            },
+            cancellationToken);
+
+    /// <summary>
+    /// Reads one snapshot's metadata.
+    /// </summary>
+    /// <param name="generation">Target snapshot.</param>
+    /// <returns>The metadata, or null when the generation is unknown.</returns>
+    public SnapshotInfo? Get(long generation)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectColumns + " WHERE generation = $generation;";
+        command.Parameters.AddWithValue("$generation", generation);
+
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadInfo(reader) : null;
+    }
+
+    /// <summary>
+    /// Finds a completed snapshot for a user that is recent enough to reuse.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes a second device cheap: it joins the snapshot the first device already
+    /// paid for instead of rebuilding an identical one.
+    /// </remarks>
+    /// <param name="userId">Owning user.</param>
+    /// <param name="wireSchema">Wire schema the client negotiated.</param>
+    /// <param name="completedAfter">Earliest completion time still considered fresh.</param>
+    /// <returns>A reusable snapshot, or null.</returns>
+    public SnapshotInfo? FindReusable(Guid userId, int wireSchema, DateTimeOffset completedAfter)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectColumns +
+            """
+             WHERE user_id = $user AND state = 'complete' AND wire_schema = $schema
+               AND completed_at >= $after
+             ORDER BY completed_at DESC LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$user", userId.ToString("N"));
+        command.Parameters.AddWithValue("$schema", wireSchema);
+        command.Parameters.AddWithValue("$after", completedAfter.ToUnixTimeMilliseconds());
+
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadInfo(reader) : null;
+    }
+
+    /// <summary>
+    /// Finds the most recent snapshot for a user, in any state.
+    /// </summary>
+    /// <param name="userId">Owning user.</param>
+    /// <returns>The latest snapshot, or null.</returns>
+    public SnapshotInfo? FindLatest(Guid userId)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = SelectColumns + " WHERE user_id = $user ORDER BY generation DESC LIMIT 1;";
+        command.Parameters.AddWithValue("$user", userId.ToString("N"));
+
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadInfo(reader) : null;
+    }
+
+    /// <summary>
+    /// Reads rows for delivery.
+    /// </summary>
+    /// <remarks>
+    /// Bounded by both count and payload bytes. The byte bound is checked <i>after</i> adding each
+    /// row so that a single oversized record is still emitted whole rather than becoming a row that
+    /// can never be delivered.
+    /// </remarks>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="afterOrdinal">Exclusive lower bound.</param>
+    /// <param name="maxRecords">Maximum rows to return.</param>
+    /// <param name="maxPayloadBytes">Approximate payload budget.</param>
+    /// <returns>Rows in ascending ordinal order.</returns>
+    public IReadOnlyList<SnapshotRow> ReadAfter(
+        long generation,
+        long afterOrdinal,
+        int maxRecords,
+        long maxPayloadBytes)
+    {
+        var rows = new List<SnapshotRow>(Math.Min(maxRecords, 1024));
+        long bytes = 0;
+
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT ordinal, kind, entity_type, entity_id, payload, checksum
+              FROM snapshot_rows
+             WHERE generation = $generation AND ordinal > $after
+             ORDER BY ordinal
+             LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$generation", generation);
+        command.Parameters.AddWithValue("$after", afterOrdinal);
+        command.Parameters.AddWithValue("$limit", maxRecords);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var payload = (byte[])reader["payload"];
+
+            rows.Add(new SnapshotRow(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                payload,
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+
+            bytes += payload.Length;
+            if (bytes >= maxPayloadBytes)
+            {
+                break;
+            }
+        }
+
+        return rows;
+    }
+
+    private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    private static DateTimeOffset? ToOffset(object value) =>
+        value is DBNull ? null : DateTimeOffset.FromUnixTimeMilliseconds(Convert.ToInt64(value, CultureInfo.InvariantCulture));
+
+    private static SnapshotInfo ReadInfo(SqliteDataReader reader) => new SnapshotInfo
+    {
+        Generation = reader.GetInt64(0),
+        UserId = Guid.ParseExact(reader.GetString(1), "N"),
+        State = reader.GetString(2),
+        BaselineSequence = reader.GetInt64(3),
+        WireSchema = reader.GetInt32(4),
+        RowCount = reader.GetInt64(5),
+        ByteCount = reader.GetInt64(6),
+        Checksum = reader.IsDBNull(7) ? null : reader.GetString(7),
+        Phase = reader.IsDBNull(8) ? null : reader.GetString(8),
+        PhaseDone = reader.GetInt64(9),
+        PhaseTotal = reader.GetInt64(10),
+        ErrorCode = reader.IsDBNull(11) ? null : reader.GetString(11),
+        ErrorDetail = reader.IsDBNull(12) ? null : reader.GetString(12),
+        CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
+        CompletedAt = ToOffset(reader.GetValue(14)),
+        ExpiresAt = ToOffset(reader.GetValue(15))
+    };
+}
