@@ -60,7 +60,8 @@ public sealed class MigrationRunner
         new ReadOnlyCollection<IMigration>(new IMigration[]
         {
             new M001Initial(),
-            new M002SnapshotRowGroups()
+            new M002SnapshotRowGroups(),
+            new M003JournalGroups()
         });
 
     /// <summary>

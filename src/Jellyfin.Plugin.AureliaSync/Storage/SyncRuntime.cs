@@ -21,6 +21,7 @@ public sealed class SyncRuntime : IDisposable
 
     private SyncDatabase? _database;
     private SnapshotStore? _snapshots;
+    private JournalStore? _journal;
     private SessionStore? _sessions;
     private byte[]? _signingKey;
     private bool _disposed;
@@ -67,6 +68,12 @@ public sealed class SyncRuntime : IDisposable
         _snapshots ?? throw new InvalidOperationException("The AureliaSync database is not available.");
 
     /// <summary>
+    /// Gets the change journal. Only valid once <see cref="IsUsable"/>.
+    /// </summary>
+    public JournalStore Journal =>
+        _journal ?? throw new InvalidOperationException("The AureliaSync database is not available.");
+
+    /// <summary>
     /// Gets the session, subscription and acknowledgement store. Only valid once <see cref="IsUsable"/>.
     /// </summary>
     public SessionStore Sessions =>
@@ -98,6 +105,7 @@ public sealed class SyncRuntime : IDisposable
     {
         _database = database;
         _snapshots = new SnapshotStore(database);
+        _journal = new JournalStore(database);
         _sessions = new SessionStore(database);
         _signingKey = signingKey;
         SchemaVersion = schemaVersion;
