@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Aurelia Sync</title>
+</head>
+<body>
+<div id="AureliaSyncConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-controller="__plugin/aureliasync.js">
+    <div data-role="content">
+        <div class="content-primary">
+
+            <form id="AureliaSyncConfigForm">
+
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h2 class="sectionTitle">Aurelia Sync</h2>
+                    </div>
+                    <div class="fieldDescription">
+                        Provides the Aurelia music client with a resumable, ordered library sync
+                        protocol. This plugin only ever reads from Jellyfin; all of its own state
+                        lives in a separate database under the Jellyfin data directory.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="Enabled" name="Enabled" type="checkbox" is="emby-checkbox" />
+                        <span>Enable synchronisation</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        When disabled, the status endpoint still reports why, and clients fall back
+                        to the standard Jellyfin API.
+                    </div>
+                </div>
+
+                <h3 class="checkboxListLabel">Retention</h3>
+
+                <div class="inputContainer">
+                    <input id="SnapshotRetentionHours" name="SnapshotRetentionHours" type="number"
+                           is="emby-input" min="1" max="720" step="1" label="Snapshot retention (hours)" />
+                    <div class="fieldDescription">How long a completed snapshot is kept.</div>
+                </div>
+
+                <div class="inputContainer">
+                    <input id="SessionIdleExpiryHours" name="SessionIdleExpiryHours" type="number"
+                           is="emby-input" min="1" max="168" step="1" label="Session idle expiry (hours)" />
+                    <div class="fieldDescription">
+                        Losing a session never loses a client's checkpoint; the client simply opens a
+                        new one.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <input id="SubscriptionExpiryDays" name="SubscriptionExpiryDays" type="number"
+                           is="emby-input" min="1" max="3650" step="1" label="Inactive client expiry (days)" />
+                    <div class="fieldDescription">
+                        After this long without contact, a client's checkpoint is discarded and its
+                        next sync requires a fresh snapshot.
+                    </div>
+                </div>
+
+                <h3 class="checkboxListLabel">Delivery limits</h3>
+
+                <div class="inputContainer">
+                    <input id="MaxRecordsPerSegment" name="MaxRecordsPerSegment" type="number"
+                           is="emby-input" min="1" max="5000" step="1" label="Max records per segment" />
+                </div>
+
+                <div class="inputContainer">
+                    <input id="MaxBytesPerSegment" name="MaxBytesPerSegment" type="number"
+                           is="emby-input" min="65536" step="1" label="Max bytes per segment" />
+                </div>
+
+                <div class="inputContainer">
+                    <input id="SegmentTimeBudgetMs" name="SegmentTimeBudgetMs" type="number"
+                           is="emby-input" min="1000" max="120000" step="500" label="Segment time budget (ms)" />
+                </div>
+
+                <div class="selectContainer">
+                    <select is="emby-select" id="DefaultChecksumMode" name="DefaultChecksumMode"
+                            label="Default checksum mode">
+                        <option value="none">none</option>
+                        <option value="segment">segment</option>
+                        <option value="record">record</option>
+                    </select>
+                    <div class="fieldDescription">
+                        Per-record checksums add roughly 20% to the wire size and are largely
+                        redundant over TLS plus a per-segment digest.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="EnableGzip" name="EnableGzip" type="checkbox" is="emby-checkbox" />
+                        <span>Compress segments with gzip</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Jellyfin's own response compression does not cover NDJSON, so this is applied
+                        by the streaming endpoint itself.
+                    </div>
+                </div>
+
+                <h3 class="checkboxListLabel">Snapshot materialisation</h3>
+
+                <div class="inputContainer">
+                    <input id="SnapshotHydrationBatchSize" name="SnapshotHydrationBatchSize" type="number"
+                           is="emby-input" min="50" max="2000" step="50" label="Hydration batch size" />
+                    <div class="fieldDescription">
+                        Items loaded from Jellyfin per batch. Larger batches are faster but use more
+                        memory on the server.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <input id="SnapshotBatchDelayMs" name="SnapshotBatchDelayMs" type="number"
+                           is="emby-input" min="0" max="5000" step="10" label="Delay between batches (ms)" />
+                    <div class="fieldDescription">
+                        Set above zero to throttle snapshot builds on servers with slow storage.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <input id="SnapshotReuseWindowMinutes" name="SnapshotReuseWindowMinutes" type="number"
+                           is="emby-input" min="0" max="10080" step="10" label="Snapshot reuse window (minutes)" />
+                    <div class="fieldDescription">
+                        A second device belonging to the same user reuses a snapshot this recent
+                        instead of building another one.
+                    </div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="AudioPlaylistsOnly" name="AudioPlaylistsOnly" type="checkbox" is="emby-checkbox" />
+                        <span>Synchronise audio playlists only</span>
+                    </label>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input id="VerboseDiagnostics" name="VerboseDiagnostics" type="checkbox" is="emby-checkbox" />
+                        <span>Verbose diagnostics</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">
+                        Logs additional protocol detail. Never logs tokens or payload contents.
+                    </div>
+                </div>
+
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                        <span>Save</span>
+                    </button>
+                </div>
+
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = '3fbf911d-ab0c-46dc-81d6-b3317bb8b176';
+
+            var textFields = [
+                'SnapshotRetentionHours', 'SessionIdleExpiryHours', 'SubscriptionExpiryDays',
+                'MaxRecordsPerSegment', 'MaxBytesPerSegment', 'SegmentTimeBudgetMs',
+                'SnapshotHydrationBatchSize', 'SnapshotBatchDelayMs', 'SnapshotReuseWindowMinutes',
+                'DefaultChecksumMode'
+            ];
+            var checkboxFields = ['Enabled', 'EnableGzip', 'AudioPlaylistsOnly', 'VerboseDiagnostics'];
+
+            document.querySelector('#AureliaSyncConfigPage').addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    textFields.forEach(function (name) {
+                        document.querySelector('#' + name).value = config[name];
+                    });
+                    checkboxFields.forEach(function (name) {
+                        document.querySelector('#' + name).checked = config[name];
+                    });
+                    Dashboard.hideLoadingMsg();
+                });
+            });
+
+            document.querySelector('#AureliaSyncConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    textFields.forEach(function (name) {
+                        var el = document.querySelector('#' + name);
+                        config[name] = el.type === 'number' ? parseInt(el.value, 10) : el.value;
+                    });
+                    checkboxFields.forEach(function (name) {
+                        config[name] = document.querySelector('#' + name).checked;
+                    });
+                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+                return false;
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

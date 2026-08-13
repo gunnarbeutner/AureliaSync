@@ -1,0 +1,40 @@
+## Build output
+bin/
+obj/
+artifacts/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+
+## Test output
+TestResults/
+*.trx
+*.coverage
+coverage*.json
+coverage*.xml
+
+## NuGet
+*.nupkg
+packages/
+.packages/
+
+## Local tooling
+.dotnet/
+.vs/
+.vscode/
+.idea/
+*.swp
+
+## macOS
+.DS_Store
+
+## Local scratch — never commit server tokens or backups
+scratch/
+*.local
+*.local.json
+secrets.env
+
+## Generated changelog fragment (CI only)
+CHANGELOG.tmp

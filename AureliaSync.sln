@@ -1,0 +1,54 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jellyfin.Plugin.AureliaSync", "src\Jellyfin.Plugin.AureliaSync\Jellyfin.Plugin.AureliaSync.csproj", "{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jellyfin.Plugin.AureliaSync.Tests", "tests\Jellyfin.Plugin.AureliaSync.Tests\Jellyfin.Plugin.AureliaSync.Tests.csproj", "{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Debug|x64.Build.0 = Debug|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Debug|x86.Build.0 = Debug|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Release|x64.ActiveCfg = Release|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Release|x64.Build.0 = Release|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Release|x86.ActiveCfg = Release|Any CPU
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567}.Release|x86.Build.0 = Release|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Debug|x64.Build.0 = Debug|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Debug|x86.Build.0 = Debug|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Release|x64.ActiveCfg = Release|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Release|x64.Build.0 = Release|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Release|x86.ActiveCfg = Release|Any CPU
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FF4F01B1-D654-4B7C-9FEA-5196EBC2E567} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{52258466-FB23-46A7-BBC6-4C1CC58AA2E2} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+	EndGlobalSection
+EndGlobal
