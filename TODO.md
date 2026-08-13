@@ -3,7 +3,12 @@
 Known-open work. Ordered by consequence within each group, not by effort. Items marked
 **unverified** are things the code intends to do but nothing has yet proven.
 
-Phase 3 (change journal, change sessions, reconciliation) is complete and running as **v1.0.0**.
+Phase 4 (diagnostics, the Jellyfin 12 lane, the reconciliation fast path, hardening) is complete and
+running as **v1.1.0**.
+
+The largest open item is no longer a defect but an absence: **the server and the client have still
+never completed a run against each other.** The six-step end-to-end script is written up in
+`COMM.md` and needs someone who can drive the app.
 
 ---
 
@@ -40,9 +45,11 @@ large enough to cross a segment boundary.
 
 ### Restart mid-journal-write
 
-A restart during a write should leave no gap and no duplicate sequence. A restart has been done
-many times, but never timed to land inside a journal append, so this is untested rather than known
-good.
+A restart during a write should leave no gap and no duplicate sequence. The *invariants* are now
+checked after every deployment restart — 344 rows spanning 33027–33370 with no duplicate sequence
+and no gap, and no snapshot left in `building` — but no restart has yet been deliberately timed to
+land inside an append. So the property holds every time it has been looked at; it has not been
+adversarially provoked.
 
 ---
 
@@ -77,15 +84,22 @@ because it means threading inventory writes through the build.
 
 ## Cost and noise
 
-### Reconciliation re-projects the whole library on every run
+### Reconciliation's fast path trusts `DateLastSaved` — *(fixed in 1.1.0, with a caveat)*
 
-Each nightly pass enumerates and projects every album, track, artist and genre for every subscribed
-user — about 34,500 items here — to compare payload hashes. It took roughly a minute per user and
-produced no journal records once seeded, which is the desired outcome, but the cost is paid whether
-or not anything changed.
+The nightly pass no longer re-projects the whole library: it asks Jellyfin for items saved since a
+stored watermark and carries the rest forward untouched. On this library that is **152s → 12s**,
+33,003 items skipped, zero spurious tombstones.
 
-If it becomes a problem, compare `DateLastSaved` first and only project items whose timestamp moved.
-The `inventory.observed_revision` column exists for exactly this and is currently written as null.
+The caveat is what the fast path now depends on. An item whose content changes *without* Jellyfin
+moving `DateLastSaved` is invisible to a fast pass. Three mitigations, all deliberate:
+
+- the watermark rewinds a minute on read, so an item saved during the previous pass is re-examined;
+- **playlists are always fully compared**, because membership changes move no timestamp — this is
+  precisely why reconciliation exists for them;
+- a seeding pass (empty inventory) still examines everything.
+
+A periodic full pass — say weekly, ignoring the watermark — would close the gap entirely. Not done
+because nothing has yet been observed to slip through it.
 
 ### Every item update is journalled, including image-only changes
 
@@ -118,25 +132,53 @@ so adding ours means rewriting the server's existing list. The current list, for
 | AudioMuse-AI | `https://raw.githubusercontent.com/NeptuneHub/audiomuse-ai-plugin/master/manifest.json` |
 | NoriSync | `https://git.missen.ca/Esmond/jellyfin-plugin-norisync/releases/download/manifest/manifest.json` |
 
-### The Jellyfin image is untagged
+### The Jellyfin 12 lane compiles but has never been run — and is deliberately unpublished
 
-`/docker/jellyfin/docker-compose.yaml` uses `image: jellyfin/jellyfin` with no tag, so a
-`docker compose pull` floats to `:latest`. Jellyfin 12.0 exists as a release candidate and targets
-net10.0; a 12.0 server would *select* this 10.11 build (because `10.11.0.0 <= 12.0`) and then fail
-to load it. The version-lane rule in `README.md` guards the manifest side, but the server would
-still end up with a broken plugin until a 2.x lane exists.
+The plugin now multi-targets `net9.0;net10.0`, and CI builds, analyses and stray-assembly-checks
+both. Jellyfin 12.0.0-rc5's API turned out to be a clean recompile: no source change was needed.
+
+**Compiling is the entire test.** No Jellyfin 12 container has been run against it, by decision.
+The 12.0 matrix entry in `release.yml` is therefore left commented out, because Jellyfin selects the
+highest version whose `targetAbi` it satisfies — publishing a `2.x` build would actively steer every
+12.0 server onto something nobody has ever executed. Publishing nothing leaves a 12.0 server with no
+compatible version, which is a visible absence rather than a silent breakage.
+
+To ship it: uncomment the matrix entry and tag `v2.0.0`. Do that only once a 12.0 server exists to
+try it on, and expect to re-cut the lane at GA — 12.0 is still a release candidate and its API may
+still move.
+
+Related, and now the more pressing half: `/docker/jellyfin/docker-compose.yaml` uses
+`image: jellyfin/jellyfin` with no tag, so a `docker compose pull` floats to `:latest`. When 12.0
+goes stable that pull will upgrade the server and the installed 1.x plugin will fail to load. Pin
+the image.
+
+### `libe_sqlite3` on the server is affected by CVE-2025-6965
+
+Not our dependency and not shipped by us — `ExcludeAssets=runtime` means the plugin contains exactly
+one DLL and resolves SQLite from Jellyfin's own copy — but that copy is what the plugin runs on.
+Jellyfin's bundled `libe_sqlite3.so` dates from September 2024 and predates the fix; SQLitePCLRaw
+has no patched release. The .NET 10 SDK's audit database flags it at build time, which is why the
+csproj carries a `NuGetAuditSuppress` for that one advisory URL (rather than a blanket `NU1903`, so
+any *other* advisory still fails the build).
+
+Nothing to do in this repository. It is recorded here because the suppression would otherwise look
+like something being swept under the rug, and because it resolves when Jellyfin updates its runtime.
 
 ---
 
 ## Notes for the client (see `COMM.md`)
 
-1. **`artworkURL` → `imageTag`** — required, breaking.
-2. **`isAlbumArtist`** — the album-artist marker table has no other source under this transport.
-3. **Treat `410` on a pending-ack replay as "reopen and replay"**; the `404` branch is unreachable.
-4. **Tolerate zero-record segments** — that is how "snapshot still building" is reported.
-5. **Apply `item.delete` in change mode.** Dropping them in snapshot mode is correct; dropping them
-   in change mode leaves deleted tracks in the library permanently.
-6. **Consider an idle guard on the drain loop**, which currently ends only on `caughtUp: true`.
+Everything originally asked of the client has been reported done: `imageTag`/`albumImageTag` artwork
+composition, `isAlbumArtist`, `410`-on-pending-ack recovery, zero-record segment tolerance,
+`item.delete` in change mode, and a ten-minute idle guard on the drain loop. All of it is verified
+only by the client agent's own account — none of it has been observed from this side.
+
+Still to hand over:
+
+1. **Log the new `reason` field** on a session response (`newClient`, `checkpointExpired`,
+   `journalGap`, `schemaChanged`, `snapshotIncomplete`, `clientRequested`). It turns "it resynced
+   again" into something diagnosable from a client log alone.
+2. **Run the six steps in `COMM.md`.** That is the outstanding item, not a nicety.
 
 ### Observation, not a defect
 
@@ -156,5 +198,19 @@ Considered and postponed deliberately, so they are not mistaken for oversights:
   leak, and per-user storage is not a problem at this scale.
 - **`relationship.replace` and `control.reconcile`.** Reserved in the protocol, unused —
   relationships travel on the item payloads as `artistIDs` and `genreIDs`.
-- **Storage-pressure handling and rate-limit verification.** The rate limit is implemented
-  (six sessions per client per hour, `429` with `Retry-After`) but untested.
+
+### Resolved in 1.1.0
+
+Storage pressure and the rate limit were both listed here as deferred; both are now implemented and
+exercised on the live server.
+
+The rate limit was also **wrong**, and blocked a real client. It capped session *creation* at six
+per hour, but a client that syncs on launch, on foreground, on pull-to-refresh and on a timer
+legitimately opens six sessions in two minutes — the observed failure was a well-behaved client
+being throttled for behaving normally. The limit now sits on snapshot *builds*
+(`MaxSnapshotBuildsPerUserPerHour`, default 4), which is the operation that actually costs
+something; ordinary and change sessions are never throttled. Verified: ten rapid sessions all
+succeed, and the third forced rebuild in an hour returns `429`.
+
+The lesson generalises. A limit belongs on the expensive operation, not on the request that might
+lead to one.
