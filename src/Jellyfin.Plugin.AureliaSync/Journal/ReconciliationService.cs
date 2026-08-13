@@ -135,6 +135,7 @@ public sealed class ReconciliationService
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var records = new List<JournalRecord>();
         var inventory = new List<InventoryRow>();
+        var skipped = 0;
 
         var albumIds = _enumerator.EnumerateIds(user, BaseItemKind.MusicAlbum);
         var albumIdSet = albumIds.ToHashSet();
@@ -152,8 +153,17 @@ public sealed class ReconciliationService
 
             foreach (var item in _enumerator.Hydrate(user, batch))
             {
+                // Albums are read either way: tracks need the name and artwork tag, whether or not
+                // the album itself changed.
                 var facts = _reader.Read(item, user.Id);
                 albumSummaries[facts.Id] = new AlbumSummary(facts.Name, facts.ImageTag);
+
+                var revision = Revision(item);
+                if (CanSkip(known, seen, inventory, WireEntityType.Album, facts.Id, revision))
+                {
+                    skipped++;
+                    continue;
+                }
 
                 Compare(
                     records,
@@ -163,7 +173,8 @@ public sealed class ReconciliationService
                     scope,
                     WireEntityType.Album,
                     facts.Id,
-                    JsonSerializer.SerializeToUtf8Bytes(projector.Album(facts, null), WireSchema.JsonOptions));
+                    JsonSerializer.SerializeToUtf8Bytes(projector.Album(facts, null), WireSchema.JsonOptions),
+                    revision);
             }
         }
 
@@ -174,6 +185,15 @@ public sealed class ReconciliationService
 
             foreach (var item in _enumerator.Hydrate(user, batch))
             {
+                // Tracks are the bulk of the work — 30,000 of them here — so the skip happens before
+                // any facts are read, not just before the payload is built.
+                var revision = Revision(item);
+                if (CanSkip(known, seen, inventory, WireEntityType.Track, item.Id, revision))
+                {
+                    skipped++;
+                    continue;
+                }
+
                 var facts = _reader.Read(item, user.Id, albumIdSet);
 
                 Compare(
@@ -184,7 +204,8 @@ public sealed class ReconciliationService
                     scope,
                     WireEntityType.Track,
                     facts.Id,
-                    JsonSerializer.SerializeToUtf8Bytes(projector.Track(facts), WireSchema.JsonOptions));
+                    JsonSerializer.SerializeToUtf8Bytes(projector.Track(facts), WireSchema.JsonOptions),
+                    revision);
             }
         }
 
@@ -338,9 +359,26 @@ public sealed class ReconciliationService
             await _runtime.Journal.AppendAsync(records, cancellationToken).ConfigureAwait(false);
         }
 
+        if (skipped > 0)
+        {
+            _logger.LogInformation(
+                "AureliaSync: reconciliation skipped {Skipped} unchanged item(s) without projecting them",
+                skipped);
+        }
+
         await WriteInventoryAsync(scope, inventory, seen, cancellationToken).ConfigureAwait(false);
         return records.Count;
     }
+
+    /// <summary>
+    /// Jellyfin's own last-saved timestamp, in ticks, or null when it has none.
+    /// </summary>
+    /// <remarks>
+    /// Null is treated as unknown rather than unchanged, so an item without a timestamp is always
+    /// fully projected.
+    /// </remarks>
+    private static long? Revision(BaseItem item) =>
+        item.DateLastSaved == default ? null : item.DateLastSaved.Ticks;
 
     private static void Compare(
         List<JournalRecord> records,
@@ -350,9 +388,10 @@ public sealed class ReconciliationService
         string scope,
         string entityType,
         Guid id,
-        byte[] payload)
+        byte[] payload,
+        long? revision = null)
     {
-        if (!Changed(known, seen, scope, entityType, id, payload, inventory))
+        if (!Changed(known, seen, scope, entityType, id, payload, inventory, revision))
         {
             return;
         }
@@ -376,17 +415,60 @@ public sealed class ReconciliationService
         string entityType,
         Guid id,
         byte[] payload,
-        List<InventoryRow> inventory)
+        List<InventoryRow> inventory,
+        long? revision = null)
     {
         var entityId = id.ToString("N");
         var key = entityType + ":" + entityId;
         seen.Add(key);
 
         var checksum = Convert.ToHexStringLower(SHA256.HashData(payload));
-        inventory.Add(new InventoryRow(scope, entityType, entityId, checksum));
+        inventory.Add(new InventoryRow(scope, entityType, entityId, checksum, revision));
 
         return !known.TryGetValue(key, out var previous)
             || !string.Equals(previous.Checksum, checksum, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Decides whether an item can be skipped without projecting it at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The expensive part of a pass is building each item's payload in order to hash it. When
+    /// Jellyfin's own <c>DateLastSaved</c> has not moved since the last pass, the payload cannot
+    /// have changed either, so the projection can be skipped entirely.
+    /// </para>
+    /// <para>
+    /// Both null cases mean <b>unknown</b> and fall through to full projection: a row written before
+    /// revisions were recorded, and an item Jellyfin reports no timestamp for. Treating unknown as
+    /// unchanged would silently stop reporting drift for exactly the items least well understood.
+    /// </para>
+    /// </remarks>
+    private static bool CanSkip(
+        Dictionary<string, InventoryRow> known,
+        HashSet<string> seen,
+        List<InventoryRow> inventory,
+        string entityType,
+        Guid id,
+        long? revision)
+    {
+        if (revision is null)
+        {
+            return false;
+        }
+
+        var entityId = id.ToString("N");
+        var key = entityType + ":" + entityId;
+
+        if (!known.TryGetValue(key, out var previous) || previous.Revision != revision)
+        {
+            return false;
+        }
+
+        // Carried forward unchanged, so the row survives the wholesale rewrite at the end.
+        seen.Add(key);
+        inventory.Add(previous);
+        return true;
     }
 
     private Dictionary<string, InventoryRow> ReadInventory(string scope)
@@ -397,7 +479,8 @@ public sealed class ReconciliationService
         using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT entity_type, entity_id, payload_checksum FROM inventory WHERE scope = $scope;
+            SELECT entity_type, entity_id, payload_checksum, observed_revision
+              FROM inventory WHERE scope = $scope;
             """;
         command.Parameters.AddWithValue("$scope", scope);
 
@@ -407,7 +490,11 @@ public sealed class ReconciliationService
             var entityType = reader.GetString(0);
             var entityId = reader.GetString(1);
             known[entityType + ":" + entityId] = new InventoryRow(
-                scope, entityType, entityId, reader.IsDBNull(2) ? string.Empty : reader.GetString(2));
+                scope,
+                entityType,
+                entityId,
+                reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetInt64(3));
         }
 
         return known;
@@ -429,13 +516,14 @@ public sealed class ReconciliationService
                     """
                     INSERT INTO inventory (scope, entity_type, entity_id, observed_revision,
                                            payload_checksum, last_seen_reconciliation)
-                    VALUES ($scope, $type, $id, NULL, $checksum, $now);
+                    VALUES ($scope, $type, $id, $revision, $checksum, $now);
                     """;
 
                 var scopeParameter = command.Parameters.Add("$scope", SqliteType.Text);
                 var type = command.Parameters.Add("$type", SqliteType.Text);
                 var id = command.Parameters.Add("$id", SqliteType.Text);
                 var checksum = command.Parameters.Add("$checksum", SqliteType.Text);
+                var revision = command.Parameters.Add("$revision", SqliteType.Integer);
                 var now = command.Parameters.Add("$now", SqliteType.Integer);
 
                 scopeParameter.Value = scope;
@@ -447,10 +535,24 @@ public sealed class ReconciliationService
                     type.Value = row.EntityType;
                     id.Value = row.EntityId;
                     checksum.Value = row.Checksum;
+                    revision.Value = (object?)row.Revision ?? DBNull.Value;
                     command.ExecuteNonQuery();
                 }
             },
             cancellationToken);
 
-    private sealed record InventoryRow(string Scope, string EntityType, string EntityId, string Checksum);
+    /// <summary>
+    /// What the last pass recorded for one entity.
+    /// </summary>
+    /// <param name="Scope">Owning user.</param>
+    /// <param name="EntityType">Wire entity type.</param>
+    /// <param name="EntityId">Entity identifier.</param>
+    /// <param name="Checksum">Hash of the payload the client was last told about.</param>
+    /// <param name="Revision">
+    /// Jellyfin's <c>DateLastSaved</c> in ticks, or null when unknown. Null means <b>unknown</b>,
+    /// never <b>unchanged</b>: rows written before revisions were recorded, and items Jellyfin
+    /// reports no timestamp for, must be fully projected rather than skipped.
+    /// </param>
+    private sealed record InventoryRow(
+        string Scope, string EntityType, string EntityId, string Checksum, long? Revision);
 }
