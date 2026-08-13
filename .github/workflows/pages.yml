@@ -12,6 +12,12 @@ on:
     paths:
       - 'docs/**'
       - '.github/workflows/pages.yml'
+  # The release workflow commits the manifest using GITHUB_TOKEN, and GitHub deliberately does not
+  # let a GITHUB_TOKEN push trigger further workflow runs. Without this trigger a release would
+  # publish its assets but never publish the manifest entry pointing at them.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -30,7 +36,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Explicitly main: on a workflow_run event the default checkout ref is the triggering run's
+      # head, which for a release is the tag rather than the branch carrying the new manifest.
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Validate the manifest before publishing it
         run: |
