@@ -104,9 +104,22 @@ public class PluginConfiguration : BasePluginConfiguration
     public int StreamWaitSeconds { get; set; } = 15;
 
     /// <summary>
-    /// Gets or sets the maximum number of sessions a single client may open per hour.
+    /// Gets or sets the maximum number of snapshot builds one user may trigger per hour.
     /// </summary>
-    public int MaxSessionsPerClientPerHour { get; set; } = 6;
+    /// <remarks>
+    /// <para>
+    /// The limit is on <b>builds</b>, not on sessions. Opening a session is cheap — it usually
+    /// reuses an existing snapshot or returns changes — whereas building a snapshot crawls the
+    /// whole library. An earlier version limited session creation instead and blocked a real client
+    /// doing nothing unusual: six sessions in two minutes is ordinary behaviour for an app that
+    /// syncs on launch, on foreground, on pull-to-refresh and on a timer.
+    /// </para>
+    /// <para>
+    /// Reuse and change sessions are never rate limited, so a client in a retry loop is slowed only
+    /// when it would actually cost the server work.
+    /// </para>
+    /// </remarks>
+    public int MaxSnapshotBuildsPerUserPerHour { get; set; } = 4;
 
     /// <summary>
     /// Gets or sets a value indicating whether verbose per-record diagnostics are logged.

@@ -338,6 +338,23 @@ public sealed class SnapshotStore
     }
 
     /// <summary>
+    /// Counts snapshot builds started for a user since a point in time.
+    /// </summary>
+    /// <param name="userId">Owning user.</param>
+    /// <param name="since">Window start.</param>
+    /// <returns>How many builds began in the window.</returns>
+    public long BuildsSince(Guid userId, DateTimeOffset since)
+    {
+        using var connection = _database.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COUNT(*) FROM snapshots WHERE user_id = $user AND created_at >= $since;";
+        command.Parameters.AddWithValue("$user", userId.ToString("N"));
+        command.Parameters.AddWithValue("$since", since.ToUnixTimeMilliseconds());
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// Returns the highest ordinal in a snapshot.
     /// </summary>
     /// <remarks>

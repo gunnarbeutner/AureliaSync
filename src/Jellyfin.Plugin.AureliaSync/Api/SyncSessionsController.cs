@@ -126,17 +126,6 @@ public class SyncSessionsController : ControllerBase
         }
 
         var sessions = _runtime.Sessions;
-        var window = DateTimeOffset.UtcNow.AddHours(-1);
-        if (sessions.SessionsCreatedSince(userId, request.ClientId, window)
-            >= Math.Max(1, configuration.MaxSessionsPerClientPerHour))
-        {
-            Response.Headers.RetryAfter = "300";
-            return Problem(
-                StatusCodes.Status429TooManyRequests,
-                SyncErrorCode.ServerBusy,
-                "Too many sessions opened recently. Try again shortly.",
-                retryable: true);
-        }
 
         // A checkpoint naming a snapshot that no longer exists is not an error: retention expired,
         // and the client did nothing wrong. It simply starts over.
@@ -191,6 +180,21 @@ public class SyncSessionsController : ControllerBase
         }
 
         var reason = SnapshotReason(userId, request, schemaVersion);
+
+        // Only a build is rate limited, and only when one would actually happen. A client that can
+        // reuse a snapshot, or that is asking for changes, is never held up — opening a session is
+        // not the expensive operation and treating it as one blocks ordinary client behaviour.
+        if (_coordinator.WouldBuild(userId, schemaVersion, request.Reset)
+            && _runtime.Snapshots.BuildsSince(userId, DateTimeOffset.UtcNow.AddHours(-1))
+                >= Math.Max(1, configuration.MaxSnapshotBuildsPerUserPerHour))
+        {
+            Response.Headers.RetryAfter = "600";
+            return Problem(
+                StatusCodes.Status429TooManyRequests,
+                SyncErrorCode.ServerBusy,
+                "This library has been rebuilt several times in the last hour. Try again shortly.",
+                retryable: true);
+        }
 
         var snapshot = await _coordinator
             .EnsureSnapshotAsync(userId, schemaVersion, request.Reset, cancellationToken)

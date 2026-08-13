@@ -146,6 +146,41 @@ public sealed class SnapshotCoordinator : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Reports whether a session request would actually trigger a library crawl.
+    /// </summary>
+    /// <remarks>
+    /// Used to rate limit builds rather than sessions. Mirrors the reuse rules in
+    /// <see cref="EnsureSnapshotAsync"/>, so a request that would join an existing build or reuse a
+    /// recent snapshot is correctly reported as free.
+    /// </remarks>
+    /// <param name="userId">The user.</param>
+    /// <param name="wireSchema">The negotiated wire schema.</param>
+    /// <param name="forceRebuild">Whether the client asked for a fresh snapshot.</param>
+    /// <returns>True when a new build would start.</returns>
+    public bool WouldBuild(Guid userId, int wireSchema, bool forceRebuild)
+    {
+        if (!_runtime.IsUsable)
+        {
+            return false;
+        }
+
+        if (forceRebuild)
+        {
+            return true;
+        }
+
+        var configuration = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        var window = DateTimeOffset.UtcNow.AddMinutes(-Math.Max(0, configuration.SnapshotReuseWindowMinutes));
+
+        if (_runtime.Snapshots.FindReusable(userId, wireSchema, window) is not null)
+        {
+            return false;
+        }
+
+        return _runtime.Snapshots.FindLatest(userId) is not { State: SnapshotInfo.StateBuilding };
+    }
+
+    /// <summary>
     /// Returns a snapshot for a user, reusing a recent one or starting a build.
     /// </summary>
     /// <remarks>

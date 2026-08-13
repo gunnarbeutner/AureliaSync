@@ -86,8 +86,12 @@
                 </div>
 
                 <div class="inputContainer">
-                    <input id="MaxSessionsPerClientPerHour" name="MaxSessionsPerClientPerHour" type="number"
-                           is="emby-input" min="1" max="240" step="1" label="Max sessions per client per hour" />
+                    <input id="MaxSnapshotBuildsPerUserPerHour" name="MaxSnapshotBuildsPerUserPerHour" type="number"
+                           is="emby-input" min="1" max="48" step="1" label="Max snapshot rebuilds per user per hour" />
+                    <div class="fieldDescription">
+                        Limits how often the library may be crawled from scratch. Ordinary syncing is
+                        never rate limited — only rebuilding is.
+                    </div>
                 </div>
 
                 <div class="selectContainer">
@@ -186,7 +190,7 @@
                 'SnapshotRetentionHours', 'SessionIdleExpiryHours', 'SubscriptionExpiryDays',
                 'MaxRecordsPerSegment', 'MaxBytesPerSegment', 'SegmentTimeBudgetMs',
                 'SnapshotHydrationBatchSize', 'SnapshotBatchDelayMs', 'SnapshotReuseWindowMinutes',
-                'StreamWaitSeconds', 'MaxSessionsPerClientPerHour', 'MaxConcurrentSnapshotBuilds',
+                'StreamWaitSeconds', 'MaxSnapshotBuildsPerUserPerHour', 'MaxConcurrentSnapshotBuilds',
                 'DefaultChecksumMode'
             ];
             var checkboxFields = ['Enabled', 'EnableGzip', 'AudioPlaylistsOnly', 'VerboseDiagnostics'];
