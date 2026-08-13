@@ -186,6 +186,40 @@ public sealed class SyncDatabase : IDisposable
     }
 
     /// <summary>
+    /// Executes a non-query statement with bound parameters.
+    /// </summary>
+    /// <param name="connection">Open connection.</param>
+    /// <param name="transaction">Transaction to enlist in, or null.</param>
+    /// <param name="sql">Statement to execute.</param>
+    /// <param name="parameters">Parameters to bind, named with a leading <c>$</c>.</param>
+    /// <returns>Number of rows affected.</returns>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Security",
+        "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "The statement is always a compile-time constant authored in this assembly; "
+            + "every runtime value is bound as a parameter rather than concatenated.")]
+    public static int ExecuteWithParameters(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string sql,
+        params (string Name, object? Value)[] parameters)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(parameters);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Transaction = transaction;
+
+        foreach (var (name, value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+
+        return command.ExecuteNonQuery();
+    }
+
+    /// <summary>
     /// Reads the database's schema version from <c>PRAGMA user_version</c>.
     /// </summary>
     /// <param name="connection">Open connection.</param>
