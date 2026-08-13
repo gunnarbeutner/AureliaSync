@@ -69,6 +69,27 @@ public sealed record SnapshotInfo
     /// <summary>Gets when the snapshot becomes eligible for cleanup.</summary>
     public DateTimeOffset? ExpiresAt { get; init; }
 
-    /// <summary>Gets a value indicating whether this snapshot may be streamed.</summary>
-    public bool IsStreamable => string.Equals(State, StateComplete, StringComparison.Ordinal);
+    /// <summary>
+    /// Gets the highest ordinal that is safe to deliver.
+    /// </summary>
+    /// <remarks>
+    /// Everything at or below this is final; everything above it may not have been materialised yet.
+    /// The builder advances it as it writes, so a client can start applying the catalog long before
+    /// the build finishes.
+    /// </remarks>
+    public long StreamableThrough { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether the snapshot is finished, so that what has been delivered can
+    /// be the whole of it.
+    /// </summary>
+    /// <remarks>
+    /// This gates <c>caughtUp</c>, and nothing else. It is deliberately <i>not</i> what decides
+    /// whether rows may be sent — see <see cref="HasDeliverableRows"/>. Conflating the two is what
+    /// made a client wait for the entire build before receiving anything.
+    /// </remarks>
+    public bool IsComplete => string.Equals(State, StateComplete, StringComparison.Ordinal);
+
+    /// <summary>Gets a value indicating whether any row can be delivered yet.</summary>
+    public bool HasDeliverableRows => StreamableThrough > 0;
 }

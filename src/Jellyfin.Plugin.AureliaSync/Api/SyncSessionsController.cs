@@ -232,10 +232,10 @@ public class SyncSessionsController : ControllerBase
             WireSchema = schemaVersion,
             Generation = snapshot.Generation,
             BaselineSequence = snapshot.BaselineSequence,
-            UpperBound = snapshot.IsStreamable ? _runtime.Snapshots.MaxOrdinal(snapshot.Generation) : 0,
+            UpperBound = snapshot.IsComplete ? _runtime.Snapshots.MaxOrdinal(snapshot.Generation) : 0,
             HighestIssuedOrdinal = startOrdinal,
             AckedOrdinal = startOrdinal,
-            State = snapshot.IsStreamable ? SessionInfo.StateStreaming : SessionInfo.StatePreparing,
+            State = snapshot.HasDeliverableRows ? SessionInfo.StateStreaming : SessionInfo.StatePreparing,
             Reason = reason,
             CreatedAt = DateTimeOffset.UtcNow,
             LastSeenAt = DateTimeOffset.UtcNow,
@@ -371,7 +371,8 @@ public class SyncSessionsController : ControllerBase
                 .ConfigureAwait(false);
         }
 
-        var snapshot = await WaitForSnapshotAsync(session, configuration, cancellationToken).ConfigureAwait(false);
+        var snapshot = await WaitForSnapshotAsync(session, afterOrdinal, configuration, cancellationToken)
+            .ConfigureAwait(false);
 
         if (snapshot is { State: SnapshotInfo.StateFailed or SnapshotInfo.StateInvalidated })
         {
@@ -383,22 +384,27 @@ public class SyncSessionsController : ControllerBase
                 requiresSnapshot: true);
         }
 
-        var ready = snapshot?.IsStreamable == true;
-        var upperBound = ready ? _runtime.Snapshots.MaxOrdinal(snapshot!.Generation) : 0;
+        // Two different questions, and conflating them is what used to make a client wait out the
+        // entire build: "may I send rows?" is answered by the watermark, "is this the end?" only by
+        // the snapshot being sealed. A partially built snapshot delivers rows with caughtUp false.
+        var complete = snapshot?.IsComplete == true;
+        var watermark = snapshot?.StreamableThrough ?? 0;
+        var upperBound = complete ? _runtime.Snapshots.MaxOrdinal(snapshot!.Generation) : watermark;
 
-        if (ready && session.UpperBound != upperBound)
+        if (complete && session.UpperBound != upperBound)
         {
             await _runtime.Sessions
                 .AttachSnapshotAsync(sessionId, snapshot!.Generation, upperBound, cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        var rows = ready
+        var rows = watermark > afterOrdinal
             ? _runtime.Snapshots.ReadAfter(
                 snapshot!.Generation,
                 afterOrdinal,
                 Math.Clamp(maxRecords ?? configuration.MaxRecordsPerSegment, 1, 5000),
-                Math.Clamp(maxBytes ?? configuration.MaxBytesPerSegment, 64 * 1024, 32L * 1024 * 1024))
+                Math.Clamp(maxBytes ?? configuration.MaxBytesPerSegment, 64 * 1024, 32L * 1024 * 1024),
+                watermark)
             : Array.Empty<SnapshotRow>();
 
         // Everything that could fail with a status code has now been decided. Once a byte is
@@ -450,7 +456,7 @@ public class SyncSessionsController : ControllerBase
                 rows,
                 afterOrdinal,
                 upperBound,
-                ready,
+                complete,
                 Math.Clamp(maxRecords ?? configuration.MaxRecordsPerSegment, 1, 5000),
                 (long)(budget * 0.94),
                 TimeSpan.FromMilliseconds(Math.Max(1000, configuration.SegmentTimeBudgetMs)),
@@ -948,10 +954,18 @@ public class SyncSessionsController : ControllerBase
     }
 
     /// <summary>
-    /// Waits for a snapshot to finish building, bounded well below the client's timeout.
+    /// Waits until there is something to send, bounded well below the client's timeout.
     /// </summary>
+    /// <remarks>
+    /// It waits for <i>rows past the client's position</i>, not for the build to finish. During a
+    /// build the watermark advances every batch, so this returns almost immediately and the client
+    /// drains continuously rather than sitting through empty segments until the snapshot is sealed.
+    /// </remarks>
     private async Task<SnapshotInfo?> WaitForSnapshotAsync(
-        SessionInfo session, PluginConfiguration configuration, CancellationToken cancellationToken)
+        SessionInfo session,
+        long afterOrdinal,
+        PluginConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (session.Generation is not { } generation)
         {
@@ -964,7 +978,8 @@ public class SyncSessionsController : ControllerBase
         {
             var snapshot = _runtime.Snapshots.Get(generation);
             if (snapshot is null
-                || snapshot.IsStreamable
+                || snapshot.StreamableThrough > afterOrdinal
+                || snapshot.IsComplete
                 || snapshot.State is SnapshotInfo.StateFailed or SnapshotInfo.StateInvalidated
                 || DateTimeOffset.UtcNow >= deadline)
             {

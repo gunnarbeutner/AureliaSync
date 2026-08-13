@@ -61,7 +61,7 @@ public sealed class SnapshotStoreTests : IDisposable
 
         var info = _store.Get(generation)!;
         Assert.Equal(SnapshotInfo.StateBuilding, info.State);
-        Assert.False(info.IsStreamable);
+        Assert.False(info.IsComplete);
         Assert.Equal(UserA, info.UserId);
     }
 
@@ -76,6 +76,49 @@ public sealed class SnapshotStoreTests : IDisposable
         Assert.Equal(100, rows.Count);
         Assert.Equal(Enumerable.Range(1, 100).Select(i => (long)i), rows.Select(r => r.Ordinal));
         Assert.Equal("{\"id\":\"1\",\"name\":\"Track 1\"}", Encoding.UTF8.GetString(rows[0].Payload));
+    }
+
+    [Fact]
+    public async Task NothingIsDeliverableUntilTheWatermarkIsPublished()
+    {
+        // The watermark is the only thing standing between a client and a half-written range, so
+        // "rows exist" must not be enough on its own.
+        var generation = await _store.CreateAsync(UserA, 1, 0);
+        await _store.AppendAsync(generation, Enumerable.Range(1, 100).Select(i => Row(i)).ToList());
+
+        Assert.Equal(0, _store.Get(generation)!.StreamableThrough);
+        Assert.Empty(_store.ReadAfter(generation, 0, 1000, long.MaxValue, _store.Get(generation)!.StreamableThrough));
+    }
+
+    [Fact]
+    public async Task AWatermarkReleasesOnlyTheRowsBelowIt()
+    {
+        var generation = await _store.CreateAsync(UserA, 1, 0);
+        await _store.AppendAsync(generation, Enumerable.Range(1, 100).Select(i => Row(i)).ToList());
+        await _store.SetStreamableThroughAsync(generation, 40);
+
+        var info = _store.Get(generation)!;
+        Assert.Equal(40, info.StreamableThrough);
+        Assert.False(info.IsComplete);
+        Assert.True(info.HasDeliverableRows);
+
+        var rows = _store.ReadAfter(generation, 0, 1000, long.MaxValue, info.StreamableThrough);
+        Assert.Equal(40, rows.Count);
+        Assert.Equal(40, rows[^1].Ordinal);
+    }
+
+    [Fact]
+    public async Task TheWatermarkNeverGoesBackwards()
+    {
+        // Batches are committed in ascending order, but a retry or a racing writer must not be able
+        // to retract rows the client has already been offered.
+        var generation = await _store.CreateAsync(UserA, 1, 0);
+        await _store.AppendAsync(generation, Enumerable.Range(1, 100).Select(i => Row(i)).ToList());
+
+        await _store.SetStreamableThroughAsync(generation, 80);
+        await _store.SetStreamableThroughAsync(generation, 20);
+
+        Assert.Equal(80, _store.Get(generation)!.StreamableThrough);
     }
 
     [Fact]
@@ -122,7 +165,7 @@ public sealed class SnapshotStoreTests : IDisposable
         await _store.CompleteAsync(generation, 1, 42, "sha256:abc", DateTimeOffset.UtcNow.AddHours(48));
 
         var info = _store.Get(generation)!;
-        Assert.True(info.IsStreamable);
+        Assert.True(info.IsComplete);
         Assert.Equal(1, info.RowCount);
         Assert.Equal("sha256:abc", info.Checksum);
         Assert.NotNull(info.CompletedAt);
@@ -148,7 +191,7 @@ public sealed class SnapshotStoreTests : IDisposable
         Assert.Empty(_store.ReadAfter(abandoned, 0, 1000, long.MaxValue));
 
         // A completed snapshot must be left entirely alone.
-        Assert.True(_store.Get(finished)!.IsStreamable);
+        Assert.True(_store.Get(finished)!.IsComplete);
         Assert.Single(_store.ReadAfter(finished, 0, 1000, long.MaxValue));
     }
 
@@ -160,7 +203,7 @@ public sealed class SnapshotStoreTests : IDisposable
 
         var info = _store.Get(generation)!;
         Assert.Equal(SnapshotInfo.StateFailed, info.State);
-        Assert.False(info.IsStreamable);
+        Assert.False(info.IsComplete);
         Assert.Equal("libraryUnavailable", info.ErrorCode);
     }
 

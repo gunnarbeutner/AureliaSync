@@ -16,7 +16,7 @@ public sealed class SnapshotStore
         """
         SELECT generation, user_id, state, baseline_sequence, wire_schema, row_count, byte_count,
                checksum, phase, phase_done, phase_total, error_code, error_detail,
-               created_at, completed_at, expires_at
+               created_at, completed_at, expires_at, streamable_through
           FROM snapshots
         """;
 
@@ -374,6 +374,35 @@ public sealed class SnapshotStore
     }
 
     /// <summary>
+    /// Publishes how far a partially built snapshot may be delivered.
+    /// </summary>
+    /// <remarks>
+    /// Only ever moves forward. The builder writes ordinals in ascending order and calls this after
+    /// each batch is committed, so a reader that respects the watermark can never observe a row that
+    /// is still being written or a range that is about to be filled in behind it.
+    /// </remarks>
+    /// <param name="generation">Target snapshot.</param>
+    /// <param name="throughOrdinal">Highest ordinal now safe to deliver.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the watermark is recorded.</returns>
+    public Task SetStreamableThroughAsync(
+        long generation,
+        long throughOrdinal,
+        CancellationToken cancellationToken = default) =>
+        _database.WriteAsync(
+            (connection, transaction) => SyncDatabase.ExecuteWithParameters(
+                connection,
+                transaction,
+                """
+                UPDATE snapshots
+                   SET streamable_through = MAX(streamable_through, $through)
+                 WHERE generation = $generation;
+                """,
+                ("$through", throughOrdinal),
+                ("$generation", generation)),
+            cancellationToken);
+
+    /// <summary>
     /// Reads rows for delivery.
     /// </summary>
     /// <remarks>
@@ -385,12 +414,18 @@ public sealed class SnapshotStore
     /// <param name="afterOrdinal">Exclusive lower bound.</param>
     /// <param name="maxRecords">Maximum rows to return.</param>
     /// <param name="maxPayloadBytes">Approximate payload budget.</param>
+    /// <param name="throughOrdinal">
+    /// Inclusive upper bound — the delivery watermark. Defaults to unbounded, which is correct for
+    /// callers that own the build (checksumming, retention) and wrong for delivery, which must never
+    /// hand out a row above the watermark.
+    /// </param>
     /// <returns>Rows in ascending ordinal order.</returns>
     public IReadOnlyList<SnapshotRow> ReadAfter(
         long generation,
         long afterOrdinal,
         int maxRecords,
-        long maxPayloadBytes)
+        long maxPayloadBytes,
+        long throughOrdinal = long.MaxValue)
     {
         var rows = new List<SnapshotRow>(Math.Min(maxRecords, 1024));
         long bytes = 0;
@@ -401,12 +436,13 @@ public sealed class SnapshotStore
             """
             SELECT ordinal, kind, entity_type, entity_id, payload, checksum, group_key
               FROM snapshot_rows
-             WHERE generation = $generation AND ordinal > $after
+             WHERE generation = $generation AND ordinal > $after AND ordinal <= $through
              ORDER BY ordinal
              LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$generation", generation);
         command.Parameters.AddWithValue("$after", afterOrdinal);
+        command.Parameters.AddWithValue("$through", throughOrdinal);
         command.Parameters.AddWithValue("$limit", maxRecords);
 
         using var reader = command.ExecuteReader();
@@ -455,6 +491,7 @@ public sealed class SnapshotStore
         ErrorDetail = reader.IsDBNull(12) ? null : reader.GetString(12),
         CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
         CompletedAt = ToOffset(reader.GetValue(14)),
-        ExpiresAt = ToOffset(reader.GetValue(15))
+        ExpiresAt = ToOffset(reader.GetValue(15)),
+        StreamableThrough = reader.GetInt64(16)
     };
 }

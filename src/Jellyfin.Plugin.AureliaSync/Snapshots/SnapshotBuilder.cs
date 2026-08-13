@@ -113,8 +113,8 @@ public sealed class SnapshotBuilder
             trackIds.Count,
             playlists.Count);
 
-        // ---- Reserve one ordinal range per phase, in protocol order. ----
-        var ordinals = new OrdinalRanges(genres.Count, artists.Count, albumIds.Count, trackIds.Count, playlists.Count);
+        // ---- Reserve one ordinal range per phase, in the order rows can be produced. ----
+        var ordinals = new OrdinalRanges(genres.Count, artists.Count, albumIds.Count, trackIds.Count);
 
         var artistIdsByName = LibraryEnumerator.ArtistIdsByName(artists);
         var albumSummaries = new Dictionary<Guid, AlbumSummary>();
@@ -201,6 +201,12 @@ public sealed class SnapshotBuilder
             written += rows.Count;
             done += batch.Count;
 
+            // Published only after the batch is committed, so the watermark never advertises a row
+            // that is still being written. This is what lets the client start applying the catalog
+            // seconds into a build that takes minutes.
+            await _store.SetStreamableThroughAsync(generation, trackOrdinal, cancellationToken)
+                .ConfigureAwait(false);
+
             await _store.SetProgressAsync(generation, "track", done, trackIds.Count, cancellationToken)
                 .ConfigureAwait(false);
             await ThrottleAsync(configuration, cancellationToken).ConfigureAwait(false);
@@ -220,6 +226,7 @@ public sealed class SnapshotBuilder
 
         await _store.AppendAsync(generation, genreRows, cancellationToken).ConfigureAwait(false);
         written += genreRows.Count;
+        await _store.SetStreamableThroughAsync(generation, genreOrdinal, cancellationToken).ConfigureAwait(false);
 
         await _store.SetProgressAsync(generation, "artist", 0, artists.Count, cancellationToken)
             .ConfigureAwait(false);
@@ -236,6 +243,7 @@ public sealed class SnapshotBuilder
 
         await _store.AppendAsync(generation, artistRows, cancellationToken).ConfigureAwait(false);
         written += artistRows.Count;
+        await _store.SetStreamableThroughAsync(generation, artistOrdinal, cancellationToken).ConfigureAwait(false);
 
         // ---- Albums, now that their track counts are known. ----
         await _store.SetProgressAsync(generation, "albumWrite", 0, albumFacts.Count, cancellationToken)
@@ -250,14 +258,15 @@ public sealed class SnapshotBuilder
 
         await _store.AppendAsync(generation, albumRows, cancellationToken).ConfigureAwait(false);
         written += albumRows.Count;
+        await _store.SetStreamableThroughAsync(generation, albumOrdinal, cancellationToken).ConfigureAwait(false);
 
         // ---- Playlists and their membership. ----
         await _store.SetProgressAsync(generation, "playlist", 0, playlists.Count, cancellationToken)
             .ConfigureAwait(false);
 
-        var entryOrdinal = ordinals.EntryStart;
-        var playlistOrdinal = ordinals.PlaylistStart;
-        var playlistRows = new List<SnapshotRow>(playlists.Count);
+        // Playlists, their membership and user data have no count known in advance, so they simply
+        // continue from the end of the reserved ranges.
+        var tailOrdinal = ordinals.TailStart;
 
         foreach (var playlist in playlists)
         {
@@ -266,41 +275,55 @@ public sealed class SnapshotBuilder
             var entries = PlaylistMembershipReader.Read(
                 playlist, user, userId, _reader, albumIdSet, trackFactsById);
 
-            // Every entry for a playlist goes out in one batch and, later, one segment: the client
-            // clears the playlist's membership and reinserts only what the segment contains.
-            var entryRows = new List<SnapshotRow>(entries.Count);
+            var groupKey = playlist.Id.ToString("N");
+            var playlistFacts = _reader.Read(playlist, userId);
+            var playlistPayload = projector.Playlist(playlistFacts, entries.Count);
+
+            // The upsert leads its own entries and shares their group key, so the two never land in
+            // different segments. The client treats a playlist upsert as "clear this playlist's
+            // membership"; membership cleared in one segment and refilled in the next would leave
+            // the playlist empty for as long as the client sat between them.
+            var rows = new List<SnapshotRow>(entries.Count + 1)
+            {
+                NewRow(
+                    ++tailOrdinal,
+                    WireKind.ItemUpsert,
+                    WireEntityType.Playlist,
+                    playlistPayload.Id,
+                    playlistPayload,
+                    groupKey)
+            };
+
             foreach (var (facts, entryId, position) in entries)
             {
                 var payload = projector.PlaylistEntry(facts, playlist.Id, entryId, position);
-                entryRows.Add(NewRow(
-                    ++entryOrdinal, WireKind.PlaylistReplace, null, payload.Id, payload, playlist.Id.ToString("N")));
+                rows.Add(NewRow(++tailOrdinal, WireKind.PlaylistReplace, null, payload.Id, payload, groupKey));
             }
 
-            await _store.AppendAsync(generation, entryRows, cancellationToken).ConfigureAwait(false);
-            written += entryRows.Count;
+            await _store.AppendAsync(generation, rows, cancellationToken).ConfigureAwait(false);
+            written += rows.Count;
+            await _store.SetStreamableThroughAsync(generation, tailOrdinal, cancellationToken)
+                .ConfigureAwait(false);
 
-            var playlistFacts = _reader.Read(playlist, userId);
-            var playlistPayload = projector.Playlist(playlistFacts, entries.Count);
-            playlistRows.Add(NewRow(
-                ++playlistOrdinal, WireKind.ItemUpsert, WireEntityType.Playlist, playlistPayload.Id, playlistPayload));
             Collect(projector, playlistFacts, userData);
         }
-
-        await _store.AppendAsync(generation, playlistRows, cancellationToken).ConfigureAwait(false);
-        written += playlistRows.Count;
 
         // ---- User data last, so favourites land on rows that already exist. ----
         await _store.SetProgressAsync(generation, "userData", 0, userData.Count, cancellationToken)
             .ConfigureAwait(false);
-        var userDataOrdinal = entryOrdinal + 1;
         var userDataRows = new List<SnapshotRow>(userData.Count);
         foreach (var payload in userData.OrderBy(u => u.Id, StringComparer.Ordinal))
         {
-            userDataRows.Add(NewRow(userDataOrdinal++, WireKind.UserDataUpsert, null, payload.Id, payload));
+            userDataRows.Add(NewRow(++tailOrdinal, WireKind.UserDataUpsert, null, payload.Id, payload));
         }
 
         await _store.AppendAsync(generation, userDataRows, cancellationToken).ConfigureAwait(false);
         written += userDataRows.Count;
+
+        // The last rows only become deliverable once the snapshot is sealed, because until then a
+        // client reaching the watermark cannot tell "nothing more yet" from "nothing more ever".
+        await _store.SetStreamableThroughAsync(generation, tailOrdinal, cancellationToken)
+            .ConfigureAwait(false);
 
         // ---- Seal it. ----
         var (checksum, bytes) = ComputeChecksum(generation);
@@ -374,22 +397,34 @@ public sealed class SnapshotBuilder
     }
 
     /// <summary>
-    /// The ordinal range reserved for each phase, in protocol order.
+    /// The ordinal range reserved for each phase.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The order here is the wire order, and it exists to match the order rows can actually be
+    /// produced.</b> Only tracks have no aggregate dependency, so they go first; albums need every
+    /// track counted, and artists and genres need every album read. Reserving ranges in any other
+    /// order means the low ordinals are filled in last, the deliverable prefix stays empty until the
+    /// build is nearly done, and the client waits out the whole build receiving nothing.
+    /// </para>
+    /// <para>
+    /// Playlists, their membership and user data have no known count in advance, so they are not
+    /// reserved at all — they continue sequentially from <see cref="TailStart"/>, which keeps the
+    /// whole build strictly ascending and the watermark meaningful.
+    /// </para>
+    /// </remarks>
     private readonly struct OrdinalRanges
     {
-        public OrdinalRanges(int genres, int artists, int albums, int tracks, int playlists)
+        public OrdinalRanges(int genres, int artists, int albums, int tracks)
         {
-            GenreStart = 0;
+            TrackStart = 0;
+            GenreStart = TrackStart + tracks;
             ArtistStart = GenreStart + genres;
             AlbumStart = ArtistStart + artists;
-            TrackStart = AlbumStart + albums;
-            PlaylistStart = TrackStart + tracks;
-
-            // Playlist membership has no count until the playlists have been read, so it simply
-            // continues after them and user data continues after that.
-            EntryStart = PlaylistStart + playlists;
+            TailStart = AlbumStart + albums;
         }
+
+        public long TrackStart { get; }
 
         public long GenreStart { get; }
 
@@ -397,10 +432,6 @@ public sealed class SnapshotBuilder
 
         public long AlbumStart { get; }
 
-        public long TrackStart { get; }
-
-        public long PlaylistStart { get; }
-
-        public long EntryStart { get; }
+        public long TailStart { get; }
     }
 }
