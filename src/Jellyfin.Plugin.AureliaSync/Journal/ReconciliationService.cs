@@ -125,6 +125,13 @@ public sealed class ReconciliationService
     {
         var scope = user.Id.ToString("N");
         var known = ReadInventory(scope);
+
+        // An empty inventory means this user has never been compared, which is not the same as
+        // "everything changed". Journalling a repair for every item would hand the client the whole
+        // catalog as deltas — precisely the full resynchronisation the journal exists to avoid, and
+        // wrong besides, since the client's state came from a snapshot that was current when taken.
+        // The first pass therefore only records what is there, and later passes diff against it.
+        var seeding = known.Count == 0;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var records = new List<JournalRecord>();
         var inventory = new List<InventoryRow>();
@@ -179,6 +186,77 @@ public sealed class ReconciliationService
                     facts.Id,
                     JsonSerializer.SerializeToUtf8Bytes(projector.Track(facts), WireSchema.JsonOptions));
             }
+        }
+
+        // Artists and genres are among the main reasons this pass exists: Jellyfin's events for
+        // item-by-name entities are unreliable, so drift here would otherwise never be reported.
+        var artistAlbumCounts = new Dictionary<Guid, int>();
+        var genreAlbumCounts = new Dictionary<Guid, int>();
+
+        foreach (var albumId in albumIds)
+        {
+            if (_libraryManager.GetItemById(albumId) is not MusicAlbum album)
+            {
+                continue;
+            }
+
+            var credits = album.AlbumArtists.Count > 0 ? album.AlbumArtists : album.Artists;
+            foreach (var artistId in projector.ResolveArtists(credits))
+            {
+                if (Guid.TryParseExact(artistId, "N", out var parsed))
+                {
+                    artistAlbumCounts[parsed] = artistAlbumCounts.GetValueOrDefault(parsed) + 1;
+                }
+            }
+
+            foreach (var genreId in projector.ResolveGenres(album.Genres ?? Array.Empty<string>())
+                     ?? Enumerable.Empty<string>())
+            {
+                if (Guid.TryParseExact(genreId, "N", out var parsed))
+                {
+                    genreAlbumCounts[parsed] = genreAlbumCounts.GetValueOrDefault(parsed) + 1;
+                }
+            }
+        }
+
+        var albumArtistIds = _enumerator.AlbumArtistIds(user);
+        foreach (var (item, _) in artists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var facts = _reader.Read(item, user.Id);
+
+            Compare(
+                records,
+                inventory,
+                seen,
+                known,
+                scope,
+                WireEntityType.Artist,
+                facts.Id,
+                JsonSerializer.SerializeToUtf8Bytes(
+                    projector.Artist(
+                        facts,
+                        artistAlbumCounts.GetValueOrDefault(item.Id),
+                        albumArtistIds.Contains(item.Id)),
+                    WireSchema.JsonOptions));
+        }
+
+        foreach (var (item, _) in _enumerator.Genres(user))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Compare(
+                records,
+                inventory,
+                seen,
+                known,
+                scope,
+                WireEntityType.Genre,
+                item.Id,
+                JsonSerializer.SerializeToUtf8Bytes(
+                    projector.Genre(
+                        item.Id, item.Name ?? string.Empty, genreAlbumCounts.GetValueOrDefault(item.Id)),
+                    WireSchema.JsonOptions));
         }
 
         // Playlists are the reason this pass exists at all: Jellyfin raises no membership event, so
@@ -242,6 +320,17 @@ public sealed class ReconciliationService
                 row.EntityId,
                 WireSchema.WireSchemaVersionMax,
                 JsonSerializer.SerializeToUtf8Bytes(new { id = row.EntityId }, WireSchema.JsonOptions)));
+        }
+
+        if (seeding)
+        {
+            _logger.LogInformation(
+                "AureliaSync: recorded a reconciliation baseline of {Count} item(s) for one user; "
+                + "later passes will report only what has since changed",
+                inventory.Count);
+
+            await WriteInventoryAsync(scope, inventory, seen, cancellationToken).ConfigureAwait(false);
+            return 0;
         }
 
         if (records.Count > 0)
