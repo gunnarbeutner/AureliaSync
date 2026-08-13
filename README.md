@@ -44,12 +44,13 @@ Jellyfin selects a plugin release with
 version number** among ABI-compatible entries wins. A newer server would therefore select an older,
 incompatible build and fail to load it. Releases are consequently partitioned into lanes:
 
-| Lane | `targetAbi` | TFM | Jellyfin |
-|---|---|---|---|
-| `1.x.y.0` | `10.11.0.0` | net9.0 | 10.11.x |
-| `2.x.y.0` | `12.0.0.0` | net10.0 | 12.x *(not yet shipped)* |
+| Lane | Major versions | `targetAbi` | TFM | Jellyfin |
+|---|---|---|---|---|
+| Current | `0.x`, `1.x` | `10.11.0.0` | net9.0 | 10.11.x |
+| Next | `2.x` | `12.0.0.0` | net10.0 | 12.x *(not yet shipped)* |
 
-**A lower lane's version number must never exceed a higher lane's.**
+**Every version in a lower lane must sort below every version in a higher one.** The release
+workflow refuses a tag whose major version does not belong to the lane being built.
 
 ## HTTP API
 
