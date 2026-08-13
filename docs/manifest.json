@@ -8,6 +8,14 @@
     "description": "Gives the Aurelia music client a resumable, ordered, idempotent view of the Jellyfin music library: a stable initial snapshot followed by an ordered change stream, delivered as bounded NDJSON segments with cumulative acknowledgement and per-client checkpoints. The plugin only ever reads from Jellyfin.",
     "versions": [
       {
+        "version": "1.0.0.0",
+        "changelog": "- Document change mode and publish a changes fixture (e518d42)\n- Seed the reconciliation baseline instead of replaying the library (2d92b1c)\n- Reconcile the library against what has already been sent (e91cf4c)\n- Journal library and user-data changes, and serve them as change sessions (e28750b)\n- Take the snapshot baseline from the journal head (d4c5f78)\n- Add the durable change journal (769ccf8)\n- Emit the segment digest the protocol promises (f311f18)\n- Record the open items from phase 2 (ceb7df4)\n- Derive album counts instead of trusting Jellyfin's item counts (8878aa3)\n- Add the session, stream and acknowledgement endpoints (4f434cc)\n- Materialise snapshots and frame them as NDJSON segments (36a59b2)\n- Store and read back materialised snapshots (2ec5387)\n- Read Jellyfin entities and enumerate the visible library (efe5a32)\n- Publish conformance fixtures for the wire format (5b53e06)\n- Project library items into wire payloads (e233d27)\n- Add cursors and signed checkpoint tokens (2fad41f)\n- Ignore local agent notes (07fb943)\n- Add the v1 wire payloads and segment framing (74e3037)\n- Document the v1 wire protocol (73e2acc)\n- Fix the manifest validation expression (c19267f)\n- Publish Pages after a release completes (168b409)\n- Publish manifest entry for v0.1.0 (69f9c6a)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/gunnarbeutner/AureliaSync/releases/download/v1.0.0/aurelia-sync_1.0.0.0.zip",
+        "checksum": "8f64b3d418314c58eb960cedc1522252",
+        "timestamp": "2026-08-13T17:57:24Z"
+      },
+      {
         "version": "0.1.0.0",
         "changelog": "- Let the 10.11 lane own pre-1.0 versions (1a1303e)\n- Publish Pages from main instead of from the release tag (28521c9)\n- Derive assembly version from the package version (2b7772f)\n- Add CI, release packaging, and the plugin manifest (d4a5a4b)\n- Add the status endpoint and service registration (bbb4fdd)\n- Add the plugin database and migrations (d44a979)",
         "targetAbi": "10.11.0.0",
