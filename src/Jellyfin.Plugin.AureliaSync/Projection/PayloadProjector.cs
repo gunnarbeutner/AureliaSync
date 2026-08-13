@@ -131,8 +131,12 @@ public sealed class PayloadProjector
     /// <summary>Projects an artist.</summary>
     /// <param name="facts">Source facts.</param>
     /// <param name="albumCount">Number of albums credited to this artist.</param>
+    /// <param name="isAlbumArtist">
+    /// Whether Jellyfin credits this artist as an album artist rather than only on individual
+    /// tracks. The client cannot derive this from anything else in the stream.
+    /// </param>
     /// <returns>The wire payload.</returns>
-    public ArtistPayload Artist(ItemFacts facts, int? albumCount)
+    public ArtistPayload Artist(ItemFacts facts, int? albumCount, bool isAlbumArtist)
     {
         ArgumentNullException.ThrowIfNull(facts);
 
@@ -144,6 +148,7 @@ public sealed class PayloadProjector
             Biography = facts.Overview,
             AlbumCount = albumCount,
             ImageTag = facts.ImageTag,
+            IsAlbumArtist = isAlbumArtist,
             IsFavorite = facts.UserData?.IsFavorite
         };
     }

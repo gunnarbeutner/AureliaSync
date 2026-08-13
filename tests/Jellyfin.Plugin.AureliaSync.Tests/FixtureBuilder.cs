@@ -75,6 +75,7 @@ internal static class FixtureBuilder
             Biography = "An artist with a non-ASCII name, to prove UTF-8 survives the wire.",
             AlbumCount = 1,
             ImageTag = "artisttag",
+            IsAlbumArtist = true,
             IsFavorite = true
         }));
 

@@ -36,6 +36,18 @@ public class ArtistPayload
     [JsonPropertyName("imageTag")]
     public string? ImageTag { get; set; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether Jellyfin credits this artist as an album artist.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot carries every artist, including those credited only on individual tracks,
+    /// because tracks reference them. Browsing by artist wants only the album artists, though —
+    /// otherwise every guest performer becomes a top-level entry. The client keeps a separate
+    /// marker table for this and has no other way to populate it from the sync stream.
+    /// </remarks>
+    [JsonPropertyName("isAlbumArtist")]
+    public bool? IsAlbumArtist { get; set; }
+
     /// <summary>Gets or sets a value indicating whether the calling user favourited this artist.</summary>
     [JsonPropertyName("isFavorite")]
     public bool? IsFavorite { get; set; }

@@ -464,7 +464,13 @@ reference. User data comes last, so favourites land on rows that already exist.
 | `biography` | string? | Jellyfin's overview |
 | `albumCount` | number? | |
 | `imageTag` | string? | Primary image cache tag |
+| `isAlbumArtist` | bool? | Whether Jellyfin credits this artist on albums rather than only on individual tracks |
 | `isFavorite` | bool? | |
+
+The snapshot carries **every** artist, including guests credited only on single tracks, because
+track records reference them. Browsing by artist normally wants only album artists, and
+`isAlbumArtist` is the only thing in the stream that distinguishes the two — a client that keeps a
+separate album-artist list must populate it from this field.
 
 **`album`**
 

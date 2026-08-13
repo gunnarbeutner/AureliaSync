@@ -199,6 +199,22 @@ public class PayloadProjectorTests
     }
 
     [Fact]
+    public void ArtistCarriesTheAlbumArtistFlagTheClientCannotDeriveItself()
+    {
+        // The snapshot carries every artist, because tracks reference guest credits. Browsing by
+        // artist should show only album artists, and nothing else in the stream distinguishes them.
+        var projector = NewProjector();
+        var facts = new ItemFacts { Id = ArtistA, Name = "Alpha", Overview = "bio" };
+
+        Assert.True(projector.Artist(facts, 3, isAlbumArtist: true).IsAlbumArtist);
+        Assert.False(projector.Artist(facts, 0, isAlbumArtist: false).IsAlbumArtist);
+
+        var payload = projector.Artist(facts, 3, isAlbumArtist: true);
+        Assert.Equal("bio", payload.Biography);
+        Assert.Equal(3, payload.AlbumCount);
+    }
+
+    [Fact]
     public void PlaylistEntryCarriesTheWholeTrackPlusItsMembership()
     {
         var playlistId = Guid.Parse("99999999-9999-9999-9999-999999999999");
