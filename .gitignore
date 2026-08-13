@@ -38,3 +38,6 @@ secrets.env
 
 ## Generated changelog fragment (CI only)
 CHANGELOG.tmp
+
+## Agent coordination scratch — local only
+COMM.md
