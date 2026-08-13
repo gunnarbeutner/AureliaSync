@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -43,20 +44,41 @@ public static class WireSchema
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Jellyfin configures MVC with <c>PropertyNamingPolicy = null</c>, so plugin controllers
-    /// serialise in PascalCase by default. Every DTO therefore carries explicit
-    /// <see cref="JsonPropertyNameAttribute"/> annotations and these options are used directly for
-    /// anything written to the NDJSON stream, so the wire format never depends on host configuration.
+    /// The client decodes with <c>.useDefaultKeys</c> and the protocol's key casing is irregular
+    /// (<c>artistId</c> but <c>artistIDs</c>, <c>playlistID</c>, <c>albumImageTag</c>), so every
+    /// DTO property is pinned with an explicit <see cref="JsonPropertyNameAttribute"/>.
     /// </para>
     /// <para>
-    /// Nulls are omitted: over 34,500 records, absent optional fields would otherwise cost megabytes.
+    /// <see cref="JsonSerializerOptions.PropertyNamingPolicy"/> is deliberately left null rather
+    /// than set to camel case. A camel-case policy would paper over a forgotten annotation by
+    /// producing a plausible-looking key; leaving it null makes the omission emit PascalCase, which
+    /// the golden-file tests catch immediately. It is a tripwire, not an oversight.
+    /// </para>
+    /// <para>
+    /// Nulls are omitted: over 34,500 records, absent optional fields would otherwise cost
+    /// megabytes. See <c>docs/PROTOCOL.md</c> for the one place where absence carries meaning —
+    /// user data is applied with COALESCE, so a cleared value must be sent explicitly.
     /// </para>
     /// </remarks>
-    public static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+    public static readonly JsonSerializerOptions JsonOptions = CreateOptions();
+
+    private static JsonSerializerOptions CreateOptions()
     {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        NumberHandling = JsonNumberHandling.Strict
-    };
+        var options = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = false,
+            PropertyNamingPolicy = null,
+            NumberHandling = JsonNumberHandling.Strict,
+
+            // The default encoder escapes every non-ASCII character, so "Björk" would go out as
+            // "Björk" — nearly double the bytes for any name with an accent, across a library
+            // full of them. The relaxed encoder still escapes everything JSON requires; "unsafe"
+            // refers to embedding output in HTML, which an NDJSON response body never is.
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+
+        options.Converters.Add(new Iso8601MillisecondConverter());
+        return options;
+    }
 }
