@@ -128,6 +128,13 @@ public sealed class SnapshotBuilder
         // ---- Albums are hydrated first, because tracks need their names and artwork. ----
         await _store.SetProgressAsync(generation, "album", 0, albumIds.Count, cancellationToken).ConfigureAwait(false);
         var albumFacts = new List<ItemFacts>(albumIds.Count);
+
+        // Album counts are derived here rather than taken from Jellyfin's ItemCounts, which is only
+        // populated when a query explicitly asks for counts and is otherwise null. Deriving them
+        // also makes the numbers agree with what is actually sent.
+        var albumCountByArtist = new Dictionary<Guid, int>();
+        var albumCountByGenre = new Dictionary<Guid, int>();
+
         foreach (var batch in LibraryEnumerator.Batch(albumIds, batchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -138,6 +145,23 @@ public sealed class SnapshotBuilder
                 albumFacts.Add(facts);
                 albumSummaries[facts.Id] = new AlbumSummary(facts.Name, facts.ImageTag);
                 Collect(projector, facts, userData);
+
+                var credits = facts.AlbumArtistNames.Count > 0 ? facts.AlbumArtistNames : facts.ArtistNames;
+                foreach (var artistId in projector.ResolveArtists(credits))
+                {
+                    if (Guid.TryParseExact(artistId, "N", out var parsed))
+                    {
+                        albumCountByArtist[parsed] = albumCountByArtist.GetValueOrDefault(parsed) + 1;
+                    }
+                }
+
+                foreach (var genreId in projector.ResolveGenres(facts.GenreNames) ?? Enumerable.Empty<string>())
+                {
+                    if (Guid.TryParseExact(genreId, "N", out var parsed))
+                    {
+                        albumCountByGenre[parsed] = albumCountByGenre.GetValueOrDefault(parsed) + 1;
+                    }
+                }
             }
 
             await ThrottleAsync(configuration, cancellationToken).ConfigureAwait(false);
@@ -185,23 +209,29 @@ public sealed class SnapshotBuilder
         }
 
         // ---- Genres and artists: small, and independent of everything above. ----
+        await _store.SetProgressAsync(generation, "genre", 0, genres.Count, cancellationToken)
+            .ConfigureAwait(false);
         var genreRows = new List<SnapshotRow>(genres.Count);
         var genreOrdinal = ordinals.GenreStart;
-        foreach (var (item, counts) in genres.OrderBy(g => g.Item.Id.ToString("N"), StringComparer.Ordinal))
+        foreach (var (item, _) in genres.OrderBy(g => g.Item.Id.ToString("N"), StringComparer.Ordinal))
         {
-            var payload = projector.Genre(item.Id, item.Name ?? string.Empty, counts.AlbumCount);
+            var payload = projector.Genre(
+                item.Id, item.Name ?? string.Empty, albumCountByGenre.GetValueOrDefault(item.Id));
             genreRows.Add(NewRow(++genreOrdinal, WireKind.ItemUpsert, WireEntityType.Genre, payload.Id, payload));
         }
 
         await _store.AppendAsync(generation, genreRows, cancellationToken).ConfigureAwait(false);
         written += genreRows.Count;
 
+        await _store.SetProgressAsync(generation, "artist", 0, artists.Count, cancellationToken)
+            .ConfigureAwait(false);
         var artistRows = new List<SnapshotRow>(artists.Count);
         var artistOrdinal = ordinals.ArtistStart;
-        foreach (var (item, counts) in artists.OrderBy(a => a.Item.Id.ToString("N"), StringComparer.Ordinal))
+        foreach (var (item, _) in artists.OrderBy(a => a.Item.Id.ToString("N"), StringComparer.Ordinal))
         {
             var facts = _reader.Read(item, userId);
-            var payload = projector.Artist(facts, counts.AlbumCount, albumArtistIds.Contains(item.Id));
+            var payload = projector.Artist(
+                facts, albumCountByArtist.GetValueOrDefault(item.Id), albumArtistIds.Contains(item.Id));
             artistRows.Add(NewRow(++artistOrdinal, WireKind.ItemUpsert, WireEntityType.Artist, payload.Id, payload));
             Collect(projector, facts, userData);
         }
@@ -210,6 +240,8 @@ public sealed class SnapshotBuilder
         written += artistRows.Count;
 
         // ---- Albums, now that their track counts are known. ----
+        await _store.SetProgressAsync(generation, "albumWrite", 0, albumFacts.Count, cancellationToken)
+            .ConfigureAwait(false);
         var albumRows = new List<SnapshotRow>(albumFacts.Count);
         var albumOrdinal = ordinals.AlbumStart;
         foreach (var facts in albumFacts.OrderBy(a => a.Id.ToString("N"), StringComparer.Ordinal))
@@ -259,6 +291,8 @@ public sealed class SnapshotBuilder
         written += playlistRows.Count;
 
         // ---- User data last, so favourites land on rows that already exist. ----
+        await _store.SetProgressAsync(generation, "userData", 0, userData.Count, cancellationToken)
+            .ConfigureAwait(false);
         var userDataOrdinal = entryOrdinal + 1;
         var userDataRows = new List<SnapshotRow>(userData.Count);
         foreach (var payload in userData.OrderBy(u => u.Id, StringComparer.Ordinal))

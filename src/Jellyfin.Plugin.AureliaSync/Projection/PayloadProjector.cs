@@ -267,12 +267,14 @@ public sealed class PayloadProjector
     /// Resolves credits to identifiers, preserving order and dropping names Jellyfin has no artist
     /// entity for.
     /// </summary>
+    /// <param name="names">Credit names in order.</param>
+    /// <returns>Resolved identifiers.</returns>
     /// <remarks>
     /// Order is load-bearing: the client stores each element's array index as the credit position.
     /// Duplicates are removed because the client's relation table is keyed on (item, artist), so a
     /// repeated credit would collapse anyway and shift every later position.
     /// </remarks>
-    private List<string> ResolveArtists(IReadOnlyList<string> names)
+    public IReadOnlyList<string> ResolveArtists(IReadOnlyList<string> names)
     {
         var resolved = new List<string>(names.Count);
         var seen = new HashSet<Guid>();
@@ -292,7 +294,12 @@ public sealed class PayloadProjector
         return resolved;
     }
 
-    private List<string>? ResolveGenres(IReadOnlyList<string> names)
+    /// <summary>
+    /// Resolves genre names to identifiers, deduplicated and in order.
+    /// </summary>
+    /// <param name="names">Genre names.</param>
+    /// <returns>Resolved identifiers, or null when there are none.</returns>
+    public IReadOnlyList<string>? ResolveGenres(IReadOnlyList<string> names)
     {
         if (names.Count == 0)
         {

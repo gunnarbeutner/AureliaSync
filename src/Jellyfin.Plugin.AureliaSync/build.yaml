@@ -23,5 +23,8 @@ description: >
 
 artifacts:
   - "Jellyfin.Plugin.AureliaSync.dll"
+  # Shipped deliberately: without it a fault in the field is a bare exception type with
+  # no line numbers, which is a poor trade for a few hundred kilobytes.
+  - "Jellyfin.Plugin.AureliaSync.pdb"
 
 changelog: ""
