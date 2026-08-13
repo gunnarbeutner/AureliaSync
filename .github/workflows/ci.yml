@@ -18,7 +18,10 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          # Both lanes: 9 ships, 10 exists to prove the source still builds against Jellyfin 12.
+          dotnet-version: |
+            9.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore AureliaSync.sln
@@ -37,17 +40,22 @@ jobs:
       - name: Guard against shipping framework assemblies
         run: |
           set -euo pipefail
-          OUT=src/Jellyfin.Plugin.AureliaSync/bin/Release/net9.0
-          test -f "$OUT/Jellyfin.Plugin.AureliaSync.dll" || { echo "::error::plugin assembly missing"; exit 1; }
+          # Checked for both lanes: the 12 lane is not published, but a leak there would be a real
+          # bug waiting for whenever it is.
+          for TFM in net9.0 net10.0; do
+            OUT="src/Jellyfin.Plugin.AureliaSync/bin/Release/$TFM"
+            test -f "$OUT/Jellyfin.Plugin.AureliaSync.dll" \
+              || { echo "::error::plugin assembly missing for $TFM"; exit 1; }
 
-          BAD=$(ls "$OUT" | grep -E '^(MediaBrowser\.|Jellyfin\.(Data|Database|Model|Common|Controller|Extensions|MediaEncoding|Naming)|Microsoft\.(Data\.Sqlite|EntityFrameworkCore)|SQLitePCLRaw|BitFaster|Emby\.Naming)' || true)
-          if [ -n "$BAD" ]; then
-            echo "::error::Plugin output contains framework assemblies that must not be shipped:"
-            echo "$BAD"
-            exit 1
-          fi
-          echo "Output is clean:"
-          ls "$OUT"
+            BAD=$(ls "$OUT" | grep -E '^(MediaBrowser\.|Jellyfin\.(Data|Database|Model|Common|Controller|Extensions|MediaEncoding|Naming)|Microsoft\.(Data\.Sqlite|EntityFrameworkCore)|SQLitePCLRaw|BitFaster|Emby\.Naming)' || true)
+            if [ -n "$BAD" ]; then
+              echo "::error::$TFM output contains framework assemblies that must not be shipped:"
+              echo "$BAD"
+              exit 1
+            fi
+            echo "$TFM output is clean:"
+            ls "$OUT"
+          done
 
       - name: Upload test results
         if: always()

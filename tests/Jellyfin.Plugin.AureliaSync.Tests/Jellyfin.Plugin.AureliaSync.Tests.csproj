@@ -27,7 +27,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Jellyfin.Plugin.AureliaSync/Jellyfin.Plugin.AureliaSync.csproj" />
+    <!-- Pinned to the shipping lane; the 12 lane is compile-only and has no runtime to test on. -->
+    <ProjectReference Include="../../src/Jellyfin.Plugin.AureliaSync/Jellyfin.Plugin.AureliaSync.csproj"
+                     SetTargetFramework="TargetFramework=net9.0" />
   </ItemGroup>
 
 </Project>

@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <!--
+      Two lanes, one source tree. net9.0 targets Jellyfin 10.11 and is what ships; net10.0
+      targets Jellyfin 12, which is still a release candidate. The 12 lane is compiled to
+      prove the source still builds against it, and is deliberately not published — see
+      TODO.md. Jellyfin selects the highest version whose targetAbi it satisfies, so an
+      untested 2.x release would be actively steered onto by every 12.0 server.
+    -->
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
     <RootNamespace>Jellyfin.Plugin.AureliaSync</RootNamespace>
     <AssemblyName>Jellyfin.Plugin.AureliaSync</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -23,7 +30,7 @@
 
     CI fails the build if any of these appear in the output directory.
   -->
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="Jellyfin.Controller" Version="10.11.11">
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>
@@ -35,9 +42,35 @@
     </PackageReference>
   </ItemGroup>
 
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0-rc5">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Jellyfin.Model" Version="12.0.0-rc5">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
   <!-- Required for ControllerBase and [Authorize]. Resolves against the shared framework; copies nothing. -->
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    CVE-2025-6965: SQLitePCLRaw.lib.e_sqlite3 bundles a vulnerable SQLite, and no fixed version has
+    been published. It arrives transitively through Microsoft.Data.Sqlite and is a compile-time
+    reference only — ExcludeAssets=runtime means the plugin ships no copy of it and resolves SQLite
+    from Jellyfin's own installation at runtime, so this plugin is not a vector for it.
+
+    Suppressed by advisory rather than by warning code on purpose: NoWarn NU1903 would silence every
+    future advisory, including ones on packages we do ship. Jellyfin's own bundled libe_sqlite3
+    remains affected and is Jellyfin's to update.
+  -->
+  <ItemGroup>
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2m69-gcr7-jv3q" />
   </ItemGroup>
 
   <ItemGroup>

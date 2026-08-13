@@ -39,6 +39,12 @@ csharp_preferred_modifier_order = public,private,protected,internal,static,exter
 
 # Nullable/quality rules we care about enough to keep at warning
 dotnet_diagnostic.CA1848.severity = none   # LoggerMessage delegates — not worth it here
+
+# New in the .NET 10 analyzers, and the same family as CA1848 above. Our logging sits on cold paths
+# — startup, one call per segment, one per snapshot build — so guarding each call with IsEnabled
+# would add noise to every log statement in the project to save nothing measurable. Kept off for the
+# same reason Jellyfin's own ruleset turns off CA1848.
+dotnet_diagnostic.CA1873.severity = none
 dotnet_diagnostic.CA1031.severity = none   # we deliberately catch broad exceptions at task boundaries
 dotnet_diagnostic.SA1633.severity = none   # file header
 dotnet_diagnostic.SA1101.severity = none   # 'this.' prefix

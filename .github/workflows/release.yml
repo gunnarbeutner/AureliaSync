@@ -31,6 +31,11 @@ jobs:
     # 'majors' lists the major version numbers belonging to each lane. Pre-1.0 releases target
     # 10.11 as well, so the 10.11 lane owns 0 and 1; the 12.0 lane starts at 2. Every version in a
     # lower lane must sort below every version in a higher one.
+    #
+    # The 12.0 lane is deliberately absent here even though it compiles in CI. Jellyfin selects the
+    # highest version whose targetAbi it satisfies, so publishing a 2.x release would actively steer
+    # every 12.0 server onto a build nobody has ever run. It goes in once there is a 12.0 server to
+    # try it on — see TODO.md.
     strategy:
       matrix:
         include:
