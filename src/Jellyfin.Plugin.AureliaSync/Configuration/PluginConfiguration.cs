@@ -93,6 +93,17 @@ public class PluginConfiguration : BasePluginConfiguration
     public string DefaultChecksumMode { get; set; } = "segment";
 
     /// <summary>
+    /// Gets or sets how long a stream request waits for a snapshot that is still being built,
+    /// in seconds, before answering with a valid but empty segment.
+    /// </summary>
+    /// <remarks>
+    /// Bounded well below the client's between-packets timeout. Waiting is what lets "still
+    /// building" be reported as an ordinary empty segment instead of an error the client has no
+    /// retry path for.
+    /// </remarks>
+    public int StreamWaitSeconds { get; set; } = 15;
+
+    /// <summary>
     /// Gets or sets the maximum number of sessions a single client may open per hour.
     /// </summary>
     public int MaxSessionsPerClientPerHour { get; set; } = 6;
