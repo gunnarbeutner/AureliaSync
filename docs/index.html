@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aurelia Sync</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #5a5a5a;
+    --rule: #e2e2e2;
+    --code-bg: #f5f5f5;
+    --accent: #4a5bb8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --fg: #e8e8ea;
+      --muted: #a0a0a8;
+      --rule: #2c2c33;
+      --code-bg: #1f1f25;
+      --accent: #8b9aed;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 3rem 1.25rem 5rem;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  .tagline { color: var(--muted); margin: 0 0 2.5rem; font-size: 1.05rem; }
+  h2 { font-size: 1.15rem; margin: 2.5rem 0 .75rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
+  code { background: var(--code-bg); padding: .15em .4em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); padding: 1rem; border-radius: 8px;
+    overflow-x: auto; border: 1px solid var(--rule);
+  }
+  pre code { background: none; padding: 0; }
+  .repo-url {
+    display: block; background: var(--code-bg); border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent); padding: 1rem; border-radius: 6px;
+    word-break: break-all; margin: 1rem 0;
+  }
+  ol { padding-left: 1.25rem; }
+  li { margin: .4rem 0; }
+  a { color: var(--accent); }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Aurelia Sync</h1>
+  <p class="tagline">A Jellyfin plugin that gives the Aurelia music client a resumable, ordered library sync protocol.</p>
+
+  <h2>Add this repository to Jellyfin</h2>
+  <p>Dashboard → Plugins → Repositories → Add, and paste this URL:</p>
+  <code class="repo-url">https://gunnarbeutner.github.io/AureliaSync/manifest.json</code>
+  <ol>
+    <li>Open the Catalog and install <strong>Aurelia Sync</strong>.</li>
+    <li>Restart Jellyfin. Plugin API routes are registered at startup, so they do not exist until the server restarts.</li>
+    <li>Aurelia detects the plugin automatically on its next connection.</li>
+  </ol>
+
+  <h2>Requirements</h2>
+  <table>
+    <tr><th>Jellyfin</th><td>10.11.x</td></tr>
+    <tr><th>Target ABI</th><td><code>10.11.0.0</code></td></tr>
+    <tr><th>Runtime</th><td>net9.0</td></tr>
+  </table>
+
+  <h2>What it does to your server</h2>
+  <p>
+    Nothing destructive. The plugin only ever reads from Jellyfin — it never writes to the Jellyfin
+    database and never calls a mutating Jellyfin API. All of its own state lives in a separate
+    SQLite database under the Jellyfin data directory, so uninstalling leaves the server exactly as
+    it was found.
+  </p>
+
+  <h2>Source</h2>
+  <p><a href="https://github.com/gunnarbeutner/AureliaSync">github.com/gunnarbeutner/AureliaSync</a> — GPL-3.0-only.</p>
+
+  <footer>
+    Not affiliated with the Jellyfin project.
+  </footer>
+</main>
+</body>
+</html>

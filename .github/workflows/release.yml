@@ -1,0 +1,185 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+
+    # Version lanes. Jellyfin picks the highest version number among entries whose targetAbi is
+    # <= the server version, so each ABI must own a disjoint version range or a newer server will
+    # select an older, unloadable build. Add the 12.0 lane here only once it has been tested.
+    strategy:
+      matrix:
+        include:
+          - abi: '10.11.0.0'
+            tfm: 'net9.0'
+            sdk: '9.0.x'
+            lane: '1'
+          # - abi: '12.0.0.0'
+          #   tfm: 'net10.0'
+          #   sdk: '10.0.x'
+          #   lane: '2'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.sdk }}
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          V="${TAG#v}"; V="${V%%-*}"          # v1.2.3 -> 1.2.3
+          FULL="${V}.0"                        # Jellyfin manifests use four-part versions
+
+          LANE="${FULL%%.*}"
+          if [ "$LANE" != "${{ matrix.lane }}" ]; then
+            echo "::error::Tag $TAG is version lane $LANE but this job builds lane ${{ matrix.lane }} (targetAbi ${{ matrix.abi }}). See the version-lane rule in README.md."
+            exit 1
+          fi
+
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "version=$FULL" >> "$GITHUB_OUTPUT"
+
+      - name: Build changelog since the previous tag
+        run: |
+          set -euo pipefail
+          PREV=$(git describe --tags --abbrev=0 "${{ steps.ver.outputs.tag }}^" 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          git log "$PREV".."${{ steps.ver.outputs.tag }}" --pretty=format:'- %s (%h)' > CHANGELOG.tmp
+          cat CHANGELOG.tmp
+
+      - name: Verify tests pass before publishing anything
+        run: |
+          dotnet test AureliaSync.sln -c Release -warnaserror \
+            -p:Version=${{ steps.ver.outputs.version }} \
+            -p:AssemblyVersion=${{ steps.ver.outputs.version }} \
+            -p:FileVersion=${{ steps.ver.outputs.version }}
+
+      - name: Package with jprm
+        id: jprm
+        uses: oddstr13/jellyfin-plugin-repository-manager@v1.1.1
+        with:
+          dotnet-target: ${{ matrix.tfm }}
+          version: ${{ steps.ver.outputs.version }}
+          path: src/Jellyfin.Plugin.AureliaSync
+          output: artifacts
+
+      - name: Checksums
+        id: sums
+        run: |
+          set -euo pipefail
+          ZIP=$(ls artifacts/*.zip | head -1)
+          echo "Packaged: $ZIP"
+          unzip -l "$ZIP"
+
+          # Jellyfin compares the manifest checksum against an MD5 of the downloaded zip.
+          MD5=$(md5sum "$ZIP" | cut -d' ' -f1)
+          sha256sum "$ZIP" > "$ZIP.sha256"
+          md5sum    "$ZIP" > "$ZIP.md5"
+
+          echo "zip=$ZIP"            >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ZIP")" >> "$GITHUB_OUTPUT"
+          echo "md5=$MD5"            >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "artifacts/*"
+          bodyFile: CHANGELOG.tmp
+          tag: ${{ steps.ver.outputs.tag }}
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add this version to docs/manifest.json
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/${{ steps.sums.outputs.name }}"
+
+          jq --arg guid    "3fbf911d-ab0c-46dc-81d6-b3317bb8b176" \
+             --arg version "${{ steps.ver.outputs.version }}" \
+             --arg abi     "${{ matrix.abi }}" \
+             --arg url     "$URL" \
+             --arg md5     "${{ steps.sums.outputs.md5 }}" \
+             --arg ts      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             --rawfile changelog CHANGELOG.tmp \
+             'map(if .guid == $guid then
+                .versions |= ([{
+                  version:    $version,
+                  changelog:  $changelog,
+                  targetAbi:  $abi,
+                  sourceUrl:  $url,
+                  checksum:   $md5,
+                  timestamp:  $ts
+                }] + (map(select(.version != $version))))
+              else . end)' \
+             docs/manifest.json > manifest.tmp
+          mv manifest.tmp docs/manifest.json
+          jq . docs/manifest.json
+
+      # A manifest whose checksum does not match the published asset makes Jellyfin refuse the
+      # install with no useful message. Catching it here rather than on the server is the whole
+      # point of this step.
+      - name: Verify the manifest checksum matches the published asset
+        run: |
+          set -euo pipefail
+          URL=$(jq -r --arg v "${{ steps.ver.outputs.version }}" \
+                '.[0].versions[] | select(.version == $v) | .sourceUrl' docs/manifest.json)
+          WANT=$(jq -r --arg v "${{ steps.ver.outputs.version }}" \
+                '.[0].versions[] | select(.version == $v) | .checksum' docs/manifest.json)
+
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "$URL" -o published.zip; then break; fi
+            echo "Asset not visible yet (attempt $attempt); waiting"
+            sleep 10
+          done
+
+          GOT=$(md5sum published.zip | cut -d' ' -f1)
+          echo "manifest=$WANT published=$GOT"
+          [ "$WANT" = "$GOT" ] || { echo "::error::manifest checksum does not match the published asset"; exit 1; }
+
+      - name: Commit the manifest
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git checkout main
+          git pull --rebase origin main
+          git add docs/manifest.json
+          git diff --staged --quiet || {
+            git commit -m "ci: publish manifest entry for ${{ steps.ver.outputs.tag }}"
+            git push origin main
+          }
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: pages
+        uses: actions/deploy-pages@v4

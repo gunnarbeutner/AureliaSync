@@ -1,0 +1,11 @@
+[
+  {
+    "guid": "3fbf911d-ab0c-46dc-81d6-b3317bb8b176",
+    "name": "Aurelia Sync",
+    "owner": "gunnarbeutner",
+    "category": "General",
+    "overview": "Efficient library synchronisation for the Aurelia music client.",
+    "description": "Gives the Aurelia music client a resumable, ordered, idempotent view of the Jellyfin music library: a stable initial snapshot followed by an ordered change stream, delivered as bounded NDJSON segments with cumulative acknowledgement and per-client checkpoints. The plugin only ever reads from Jellyfin.",
+    "versions": []
+  }
+]

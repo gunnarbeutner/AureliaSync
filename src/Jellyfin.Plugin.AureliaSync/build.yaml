@@ -1,0 +1,27 @@
+---
+name: "Aurelia Sync"
+guid: "3fbf911d-ab0c-46dc-81d6-b3317bb8b176"
+version: "0.0.0.0"
+
+# Version lane 1.x.y.0 targets Jellyfin 10.11 on net9.0. Jellyfin selects the highest version
+# number whose targetAbi is <= the server version, so a newer server would otherwise pick this
+# build and fail to load it. A 12.0 lane must use version numbers 2.x.y.0 and a separate targetAbi.
+targetAbi: "10.11.0.0"
+framework: "net9.0"
+
+owner: "gunnarbeutner"
+category: "General"
+overview: "Efficient library synchronisation for the Aurelia music client."
+description: >
+  Gives the Aurelia music client a resumable, ordered, idempotent view of the Jellyfin music
+  library: a stable initial snapshot followed by an ordered change stream, delivered as bounded
+  NDJSON segments with cumulative acknowledgement and per-client checkpoints.
+
+  The plugin only ever reads from Jellyfin. It never writes to the Jellyfin database and never
+  calls a mutating Jellyfin API; all of its own state lives in a separate SQLite database under
+  the Jellyfin data directory.
+
+artifacts:
+  - "Jellyfin.Plugin.AureliaSync.dll"
+
+changelog: ""

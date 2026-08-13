@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore AureliaSync.sln
+
+      - name: Build
+        run: dotnet build AureliaSync.sln -c Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test tests/Jellyfin.Plugin.AureliaSync.Tests -c Release --no-build --logger "trx;LogFileName=results.trx"
+
+      # The plugin must ship exactly one assembly. Jellyfin's PluginLoadContext falls through to the
+      # server's own assemblies for anything it cannot resolve beside the plugin, so shipping our
+      # own copy of Microsoft.Data.Sqlite would register a second SQLitePCLRaw native provider in a
+      # process that already has one. This guard turns the ExcludeAssets=runtime assumption into an
+      # assertion that cannot silently regress.
+      - name: Guard against shipping framework assemblies
+        run: |
+          set -euo pipefail
+          OUT=src/Jellyfin.Plugin.AureliaSync/bin/Release/net9.0
+          test -f "$OUT/Jellyfin.Plugin.AureliaSync.dll" || { echo "::error::plugin assembly missing"; exit 1; }
+
+          BAD=$(ls "$OUT" | grep -E '^(MediaBrowser\.|Jellyfin\.(Data|Database|Model|Common|Controller|Extensions|MediaEncoding|Naming)|Microsoft\.(Data\.Sqlite|EntityFrameworkCore)|SQLitePCLRaw|BitFaster|Emby\.Naming)' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Plugin output contains framework assemblies that must not be shipped:"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "Output is clean:"
+          ls "$OUT"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: '**/*.trx'
+          if-no-files-found: ignore
