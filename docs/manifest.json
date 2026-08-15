@@ -8,6 +8,14 @@
     "description": "Gives the Aurelia music client a resumable, ordered, idempotent view of the Jellyfin music library: a stable initial snapshot followed by an ordered change stream, delivered as bounded NDJSON segments with cumulative acknowledgement and per-client checkpoints. The plugin only ever reads from Jellyfin.",
     "versions": [
       {
+        "version": "1.2.3.0",
+        "changelog": "- Add a repair fixture covering catalog.manifest (24ac2d7)\n- Remove segment and snapshot digests from the protocol (267e169)\n- Fix the configuration page never loading its values (2a0a1f5)\n- Skip Jellyfin's redundant JSON deserialisation when hydrating (47be61e)\n- Record 1.2.0 protocol changes in the open items (b02bff0)\n- Repair clients that fall out of journal retention instead of resnapshotting (f74c465)\n- Stream the catalog while it is still being built (895c254)\n- Publish manifest entry for v1.1.0 (2140a86)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/gunnarbeutner/AureliaSync/releases/download/v1.2.3/aurelia-sync_1.2.3.0.zip",
+        "checksum": "425d74cfa6e542b4837eb26d7fa36fd1",
+        "timestamp": "2026-08-15T21:22:43Z"
+      },
+      {
         "version": "1.1.0.0",
         "changelog": "- Update open items for phase 4 (cce8678)\n- Refuse new snapshots under storage pressure (588f71c)\n- Build against Jellyfin 12 as well (f2322b1)\n- Let Jellyfin filter reconciliation by timestamp (cf3a1a2)\n- Rate limit snapshot builds, not sessions (0f0bfd1)\n- Skip unchanged items when reconciling (9396e91)\n- Record what each session delivered, and why it got a snapshot (11a5469)\n- Record what phase 3 left open (ffdff2e)\n- Publish manifest entry for v1.0.0 (9c9bf51)",
         "targetAbi": "10.11.0.0",
