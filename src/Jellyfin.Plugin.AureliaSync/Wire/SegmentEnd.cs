@@ -50,6 +50,18 @@ public class SegmentEnd
     public long SessionUpperBound { get; set; }
 
     /// <summary>
+    /// Gets or sets the journal's head at the moment this segment was written.
+    /// </summary>
+    /// <remarks>
+    /// Advisory, and deliberately distinct from <see cref="SessionUpperBound"/>, which is fixed
+    /// when the session opens so that a session's work is finite. <c>caughtUp</c> therefore means
+    /// "caught up to that bound", not "caught up to now" — during a library scan the two diverge,
+    /// and without this a client cannot tell that more is already waiting.
+    /// </remarks>
+    [JsonPropertyName("journalHead")]
+    public long JournalHead { get; set; }
+
+    /// <summary>
     /// Gets or sets why the segment ended: <c>maxRecords</c>, <c>maxBytes</c>, <c>timeBudget</c>,
     /// <c>upperBound</c>, or <c>clientAbort</c>.
     /// </summary>

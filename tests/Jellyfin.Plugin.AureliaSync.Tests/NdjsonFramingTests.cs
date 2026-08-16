@@ -41,6 +41,7 @@ public class NdjsonFramingTests
         IReadOnlyList<SnapshotRow> rows,
         long afterOrdinal = 0,
         long upperBound = long.MaxValue,
+        long journalHead = 0,
         bool ready = true,
         int maxRecords = 1000,
         long maxBytes = 8 * 1024 * 1024,
@@ -48,7 +49,7 @@ public class NdjsonFramingTests
     {
         using var stream = new MemoryStream();
         var outcome = await NdjsonSegmentWriter.WriteAsync(
-            stream, Begin(), rows, afterOrdinal, upperBound, ready, maxRecords, maxBytes,
+            stream, Begin(), rows, afterOrdinal, upperBound, journalHead, ready, maxRecords, maxBytes,
             TimeSpan.FromMinutes(5), onIssued, CancellationToken.None);
 
         return (Encoding.UTF8.GetString(stream.ToArray()), outcome);
@@ -221,6 +222,20 @@ public class NdjsonFramingTests
     }
 
     [Fact]
+    public async Task ASegmentMayBeginWithAGroupedRow()
+    {
+        // The group rule stops a segment at the row that starts a new group without writing it, so
+        // the next segment begins with exactly that row: a grouped one, with nothing before it to
+        // compare against. This is the ordinary case, not an edge case.
+        var (text, outcome) = await WriteAsync(
+            new[] { Row(1, groupKey: "playlist-a"), Row(2, groupKey: "playlist-a") });
+
+        // Before the index guard this threw rather than asserting anything.
+        Assert.Equal(2, outcome.RecordCount);
+        Assert.Equal(2, Parse(text).Count(d => d.RootElement.TryGetProperty("sequence", out _)));
+    }
+
+    [Fact]
     public async Task TheIssuedOrdinalIsRecordedBeforeTheClosingLineIsWritten()
     {
         // If the connection dies during the final flush, the client may still have received records
@@ -233,6 +248,7 @@ public class NdjsonFramingTests
             Begin(),
             new[] { Row(1), Row(2) },
             0,
+            2,
             2,
             true,
             1000,

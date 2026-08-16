@@ -47,6 +47,10 @@ public sealed class NdjsonSegmentWriter
     /// <param name="rows">Candidate rows, in ascending ordinal order.</param>
     /// <param name="afterOrdinal">The position the client asked to continue from.</param>
     /// <param name="upperBound">The highest ordinal this session will ever deliver.</param>
+    /// <param name="journalHead">
+    /// The journal's head right now, sent as advisory so a client can tell whether being caught up
+    /// to the session's bound also means being caught up to the library.
+    /// </param>
     /// <param name="snapshotReady">Whether the snapshot is complete and may report catch-up.</param>
     /// <param name="maxRecords">Record limit.</param>
     /// <param name="maxTotalBytes">Budget for the whole segment, framing included.</param>
@@ -68,6 +72,7 @@ public sealed class NdjsonSegmentWriter
         IReadOnlyList<SnapshotRow> rows,
         long afterOrdinal,
         long upperBound,
+        long journalHead,
         bool snapshotReady,
         int maxRecords,
         long maxTotalBytes,
@@ -106,7 +111,10 @@ public sealed class NdjsonSegmentWriter
             // The consequence is that a single group larger than the budget is emitted whole and
             // overshoots. That is deliberate: an oversized segment is recoverable, a truncated
             // playlist is silent data loss.
-            var startsNewGroup = row.GroupKey is null
+            // The first row of a segment always starts a group: the previous segment stopped
+            // precisely because this row began one, so there is no earlier row to compare it to.
+            var startsNewGroup = index == 0
+                || row.GroupKey is null
                 || !string.Equals(row.GroupKey, rows[index - 1].GroupKey, StringComparison.Ordinal);
 
             // Budgets are only consulted once something has been written: a segment of zero records
@@ -156,6 +164,7 @@ public sealed class NdjsonSegmentWriter
             ByteCount = payloadBytes,
             CaughtUp = caughtUp,
             SessionUpperBound = upperBound,
+            JournalHead = journalHead,
             StopReason = caughtUp ? SegmentOutcome.StopUpperBound : stopReason,
             NextAfter = cursor
         };

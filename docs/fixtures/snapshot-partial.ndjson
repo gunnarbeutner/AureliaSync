@@ -1,3 +1,3 @@
 {"kind":"segment.begin","wireSchemaVersion":2,"protocolVersion":1,"sessionId":"kQ7xample000000000000000000000000000000000","mode":"snapshot","generation":17,"afterCursor":"MXxzfDE3fDQyMDA","serverTime":"2026-08-13T15:48:55.123Z"}
 {"cursor":"MXxzfDE3fDQyMDE","sequence":4201,"kind":"item.upsert","entityType":"track","entityId":"44444444444444444444444444444444","payload":{"id":"44444444444444444444444444444444","name":"Hunter","albumId":"33333333333333333333333333333333","duration":244.28}}
-{"kind":"segment.end","cursor":"MXxzfDE3fDQyMDE","recordCount":1,"byteCount":0,"caughtUp":false,"sessionUpperBound":34512,"stopReason":"maxRecords","nextAfter":"MXxzfDE3fDQyMDE"}
+{"kind":"segment.end","cursor":"MXxzfDE3fDQyMDE","recordCount":1,"byteCount":0,"caughtUp":false,"sessionUpperBound":34512,"journalHead":0,"stopReason":"maxRecords","nextAfter":"MXxzfDE3fDQyMDE"}
