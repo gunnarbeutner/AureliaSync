@@ -8,6 +8,14 @@
     "description": "Gives the Aurelia music client a resumable, ordered, idempotent view of the Jellyfin music library: a stable initial snapshot followed by an ordered change stream, delivered as bounded NDJSON segments with cumulative acknowledgement and per-client checkpoints. The plugin only ever reads from Jellyfin.",
     "versions": [
       {
+        "version": "1.3.0.0",
+        "changelog": "- Stop sending fields no record owns (c1f2d28)\n- Publish manifest entry for v1.2.3 (21d6206)",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/gunnarbeutner/AureliaSync/releases/download/v1.3.0/aurelia-sync_1.3.0.0.zip",
+        "checksum": "c81246c2800a66f9f4b5447384330139",
+        "timestamp": "2026-08-16T00:15:21Z"
+      },
+      {
         "version": "1.2.3.0",
         "changelog": "- Add a repair fixture covering catalog.manifest (24ac2d7)\n- Remove segment and snapshot digests from the protocol (267e169)\n- Fix the configuration page never loading its values (2a0a1f5)\n- Skip Jellyfin's redundant JSON deserialisation when hydrating (47be61e)\n- Record 1.2.0 protocol changes in the open items (b02bff0)\n- Repair clients that fall out of journal retention instead of resnapshotting (f74c465)\n- Stream the catalog while it is still being built (895c254)\n- Publish manifest entry for v1.1.0 (2140a86)",
         "targetAbi": "10.11.0.0",
