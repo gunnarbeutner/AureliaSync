@@ -26,8 +26,10 @@ needs in order to resume.
 Delivery is ordered and at-least-once. Replay is always safe: applying a record twice must produce
 the same result as applying it once.
 
-Protocol v1 implements both modes. A client that has fully acknowledged a snapshot and whose
-position is still covered by the journal receives `mode: "changes"`; anything else receives
+Protocol v1 implements three modes. A client that has fully acknowledged a snapshot and whose
+position is still covered by the journal receives `mode: "changes"`. A client that had fully
+synced but has fallen behind the journal receives `mode: "repair"` — a snapshot of only what
+changed, plus a manifest of everything that survives (§8.6). Anything else receives
 `mode: "snapshot"`.
 
 ---
@@ -414,10 +416,16 @@ decoding failure that aborts the client's sync.
 ### 7.3 `segment.end` — exactly once, last
 
 ```json
-{"kind":"segment.end","cursor":"MXxzfDE3fDQyMDE","recordCount":1000,"byteCount":412887,"caughtUp":false,"sessionUpperBound":34512,"stopReason":"maxRecords","nextAfter":"MXxzfDE3fDQyMDE"}
+{"kind":"segment.end","cursor":"MXxzfDE3fDQyMDE","recordCount":1000,"byteCount":412887,"caughtUp":false,"sessionUpperBound":34512,"journalHead":34980,"stopReason":"maxRecords","nextAfter":"MXxzfDE3fDQyMDE"}
 ```
 
 `stopReason` ∈ `maxRecords` | `maxBytes` | `timeBudget` | `upperBound` | `clientAbort`.
+
+`journalHead` is the journal's head as the segment was written, and is **advisory**.
+`sessionUpperBound` is fixed when the session opens so that a session's work is finite, so
+`caughtUp` means caught up *to that bound*. During a library scan the head runs ahead of it, and
+a client that wants to converge rather than wait for its next trigger should reopen when
+`journalHead > sessionUpperBound`.
 
 ### 7.4 `error`
 
@@ -462,6 +470,7 @@ coordinating with the client.
 | `playlist.replace` | yes | **One playlist entry**, not a whole playlist (§8.4) |
 | `userData.upsert` | yes | Per-user state for one item |
 | `item.delete` | changes only | Tombstone. **Never emitted in snapshot mode** — snapshot delivery has no removal channel and the client drops these. In changes mode they must be applied |
+| `catalog.manifest` | repair only | Identifiers that still exist, for one `entityType` (§8.6) |
 | `relationship.replace` | reserved | Accepted and ignored |
 | `control.reconcile` | reserved | Accepted and ignored |
 
@@ -581,6 +590,24 @@ and renumbering: the client's `playlistEntry` primary key is `(playlist, item)`,
 track collapses to one row.
 
 All entries for one playlist must appear in a single segment (§7.6).
+
+### 8.5a `catalog.manifest` and repair mode
+
+A repair carries only what changed since the client's last acknowledged position, which is enough
+for edits but not for deletions: a removed item leaves no timestamp to find it by. So a repair also
+sends, for each `entityType`, the identifiers that still exist:
+
+```json
+{"cursor":"…","kind":"catalog.manifest","entityType":"album","entityId":"manifest-0","payload":{"id":"manifest-0","entityType":"album","ids":["6f3a…","91bc…"]}}
+```
+
+The client applies a repair's `item.upsert` records as a **merge**, exactly as in changes mode —
+never as a replacement, because a repair does not carry the whole library.
+
+Manifests are chunked, and the chunks for one entity type may span segments. A client must
+accumulate them across the whole session and remove what is missing only once the terminal segment
+arrives. Acting on a partial manifest would delete everything the rest of it still vouches for. A
+repair interrupted before that point simply leaves the stale rows in place until the next one.
 
 ### 8.5 `userData.upsert`
 

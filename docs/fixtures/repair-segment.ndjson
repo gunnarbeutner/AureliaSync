@@ -3,4 +3,4 @@
 {"cursor":"MXxzfDE3fDgxMDI","sequence":8102,"kind":"catalog.manifest","entityType":"track","entityId":"manifest-0","payload":{"id":"manifest-0","entityType":"track","ids":["44444444444444444444444444444444"]}}
 {"cursor":"MXxzfDE3fDgxMDM","sequence":8103,"kind":"catalog.manifest","entityType":"track","entityId":"manifest-1","payload":{"id":"manifest-1","entityType":"track","ids":["55555555555555555555555555555555"]}}
 {"cursor":"MXxzfDE3fDgxMDQ","sequence":8104,"kind":"catalog.manifest","entityType":"album","entityId":"manifest-2","payload":{"id":"manifest-2","entityType":"album","ids":["33333333333333333333333333333333"]}}
-{"kind":"segment.end","cursor":"MXxzfDE3fDgxMDQ","recordCount":4,"byteCount":0,"caughtUp":true,"sessionUpperBound":8104,"stopReason":"upperBound","nextAfter":"MXxzfDE3fDgxMDQ"}
+{"kind":"segment.end","cursor":"MXxzfDE3fDgxMDQ","recordCount":4,"byteCount":0,"caughtUp":true,"sessionUpperBound":8104,"journalHead":0,"stopReason":"upperBound","nextAfter":"MXxzfDE3fDgxMDQ"}
