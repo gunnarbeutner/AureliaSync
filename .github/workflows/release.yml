@@ -183,6 +183,11 @@ jobs:
 
           MANIFEST=$(cat docs/manifest.json)
           git fetch origin main
+
+          # The generated manifest is already held in $MANIFEST. The working copy
+          # of it belongs to the tagged commit, and git refuses to switch branches
+          # while it differs from the one on main.
+          git checkout -- docs/manifest.json
           git checkout -B main origin/main
           printf '%s\n' "$MANIFEST" > docs/manifest.json
 
