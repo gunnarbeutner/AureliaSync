@@ -6,7 +6,7 @@ This document is the source of truth. Where it and either implementation disagre
 wins and the implementation is wrong.
 
 - **Protocol version:** 1
-- **Wire schema version:** 1
+- **Wire schema version:** 2
 - **Plugin GUID:** `3fbf911d-ab0c-46dc-81d6-b3317bb8b176`
 - **Repository manifest:** `https://gunnarbeutner.github.io/AureliaSync/manifest.json`
 
@@ -62,9 +62,9 @@ JSON keys must therefore match the client's Swift property names byte for byte, 
 inconsistent capitalisation:
 
 ```
-id  name  sortName  artistName  artistId  artistIDs  albumName  albumId
-productionYear  duration  imageTag  albumImageTag  indexNumber  parentIndexNumber
-trackCount  albumCount  biography  dateCreated  genreIDs
+id  name  sortName  artistName  artistId  artistIDs  albumId
+productionYear  duration  imageTag  indexNumber  parentIndexNumber
+biography  dateCreated  genreIDs
 playlistEntryID  playlistID  position
 isFavorite  lastPlayedAt  playCount  playbackPositionTicks
 ```
@@ -174,7 +174,7 @@ runs **no Jellyfin library queries**, only small reads of the plugin's own datab
   "plugin": "AureliaSync",
   "pluginVersion": "0.2.0.0",
   "protocolVersions":   { "min": 1, "max": 1 },
-  "wireSchemaVersions": { "min": 1, "max": 1 },
+  "wireSchemaVersions": { "min": 2, "max": 2 },
   "serverVersion": "10.11.11",
   "targetAbi": "10.11.0.0",
   "health": "ok",
@@ -400,7 +400,7 @@ decoding failure that aborts the client's sync.
 ### 7.1 `segment.begin` — exactly once, before any record
 
 ```json
-{"kind":"segment.begin","wireSchemaVersion":1,"protocolVersion":1,"sessionId":"kQ7…","mode":"snapshot","generation":17,"afterCursor":null,"serverTime":"2026-08-13T15:48:55.123Z"}
+{"kind":"segment.begin","wireSchemaVersion":2,"protocolVersion":1,"sessionId":"kQ7…","mode":"snapshot","generation":17,"afterCursor":null,"serverTime":"2026-08-13T15:48:55.123Z"}
 ```
 
 ### 7.2 Record lines
@@ -494,7 +494,6 @@ reference. User data comes last, so favourites land on rows that already exist.
 | `name` | string | |
 | `sortName` | string? | |
 | `biography` | string? | Jellyfin's overview |
-| `albumCount` | number? | |
 | `imageTag` | string? | Primary image cache tag |
 | `isAlbumArtist` | bool? | Whether Jellyfin credits this artist on albums rather than only on individual tracks |
 | `isFavorite` | bool? | |
@@ -512,7 +511,6 @@ separate album-artist list must populate it from this field.
 | `artistName` | string? | Album artist display name |
 | `artistId` | string? | Primary album artist |
 | `productionYear` | number? | |
-| `trackCount` | number? | Distinct visible tracks, consistent with what is actually sent |
 | `genreIDs` | string[]? | |
 | `imageTag` | string? | |
 | `isFavorite` | bool? | |
@@ -525,27 +523,37 @@ separate album-artist list must populate it from this field.
 | `artistName` | string? | Joined display string |
 | `artistId` | string? | First credit |
 | `artistIDs` | string[]? | **Order is significant** — the client stores the array index as the credit position |
-| `albumName`, `albumId` | string? | |
+| `albumId` | string? | The album record carries its name and artwork |
 | `duration` | number? | **Seconds**, not ticks |
 | `indexNumber` | number? | Track number |
 | `parentIndexNumber` | number? | Disc number |
 | `productionYear` | number? | |
 | `genreIDs` | string[]? | |
 | `imageTag` | string? | The track's own Primary tag |
-| `albumImageTag` | string? | The album's Primary tag |
 | `isFavorite` | bool? | |
 
 **`playlist`**
 
-`id`, `name`, `sortName`, `trackCount`, `imageTag`, `dateCreated`, `isFavorite`.
+`id`, `name`, `sortName`, `imageTag`, `dateCreated`, `isFavorite`.
 
 **`genre`**
 
-`id`, `name`, `albumCount`. Genres carry no artwork, sort name, or user state.
+`id`, `name`. Genres carry no artwork, sort name, or user state.
+
+#### Counts are the client's to derive
+
+No record carries a count of another entity — an album's track count, an artist's or genre's album
+count, a playlist's length. Every one of those changes without the entity that would carry it being
+touched, so a copy on the wire is a copy that goes stale: the count belongs to whoever can see the
+whole set, and after a sync that is the client. It counts its own rows, which also guarantees the
+number agrees with the list underneath it.
+
+For the same reason a track names its album only by `albumId`. The album's name and artwork live on
+the album record, which is re-sent whenever they change.
 
 #### Artwork is a tag, not a URL
 
-The server sends `imageTag` (and `albumImageTag` for tracks). **The client composes the URL**:
+The server sends `imageTag`. **The client composes the URL**:
 
 ```
 \(baseURL)/Items/\(id)/Images/Primary?maxWidth=\(width)&tag=\(imageTag)
@@ -570,8 +578,7 @@ track metadata, not just an identifier.
 
 `position` is dense and zero-based. **Duplicates must be removed**, keeping the first occurrence
 and renumbering: the client's `playlistEntry` primary key is `(playlist, item)`, so a repeated
-track collapses to one row. `playlist.trackCount` must equal the number of entries actually sent,
-or the header count will not match the list.
+track collapses to one row.
 
 All entries for one playlist must appear in a single segment (§7.6).
 

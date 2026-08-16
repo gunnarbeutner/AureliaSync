@@ -20,7 +20,6 @@ public sealed class PayloadProjector
     public const string ArtistSeparator = ", ";
 
     private readonly IReadOnlyDictionary<string, Guid> _artistIdsByName;
-    private readonly IReadOnlyDictionary<Guid, AlbumSummary> _albums;
     private readonly Func<string, Guid> _genreIdResolver;
 
     /// <summary>
@@ -30,18 +29,15 @@ public sealed class PayloadProjector
     /// Artist name to identifier, built once for the whole library. Comparison must be
     /// case-insensitive, matching how Jellyfin resolves artist names.
     /// </param>
-    /// <param name="albums">Album identifier to summary, filled while projecting albums.</param>
     /// <param name="genreIdResolver">
     /// Resolves a genre name to its identifier. Backed by <c>GetMusicGenreId</c>, which is a
     /// deterministic hash rather than a database lookup.
     /// </param>
     public PayloadProjector(
         IReadOnlyDictionary<string, Guid> artistIdsByName,
-        IReadOnlyDictionary<Guid, AlbumSummary> albums,
         Func<string, Guid> genreIdResolver)
     {
         _artistIdsByName = artistIdsByName;
-        _albums = albums;
         _genreIdResolver = genreIdResolver;
     }
 
@@ -72,9 +68,6 @@ public sealed class PayloadProjector
         ArgumentNullException.ThrowIfNull(facts);
 
         var artistIds = ResolveArtists(facts.ArtistNames);
-        var album = facts.AlbumId is { } albumId && _albums.TryGetValue(albumId, out var summary)
-            ? summary
-            : default;
 
         return new TrackPayload
         {
@@ -84,7 +77,6 @@ public sealed class PayloadProjector
             ArtistName = JoinArtists(facts.ArtistNames),
             ArtistId = artistIds.Count > 0 ? artistIds[0] : null,
             ArtistIDs = artistIds.Count > 0 ? artistIds : null,
-            AlbumName = album.Name,
             AlbumId = facts.AlbumId is { } id ? FormatId(id) : null,
             Duration = TicksToSeconds(facts.RunTimeTicks),
             IndexNumber = facts.IndexNumber,
@@ -92,19 +84,14 @@ public sealed class PayloadProjector
             ProductionYear = facts.ProductionYear,
             GenreIDs = ResolveGenres(facts.GenreNames),
             ImageTag = facts.ImageTag,
-            AlbumImageTag = album.ImageTag,
             IsFavorite = facts.UserData?.IsFavorite
         };
     }
 
     /// <summary>Projects an album.</summary>
     /// <param name="facts">Source facts.</param>
-    /// <param name="trackCount">
-    /// Number of visible tracks actually being sent for this album, which is not necessarily
-    /// Jellyfin's child count.
-    /// </param>
     /// <returns>The wire payload.</returns>
-    public AlbumPayload Album(ItemFacts facts, int? trackCount)
+    public AlbumPayload Album(ItemFacts facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
 
@@ -121,7 +108,6 @@ public sealed class PayloadProjector
             ArtistName = JoinArtists(credits),
             ArtistId = artistIds.Count > 0 ? artistIds[0] : null,
             ProductionYear = facts.ProductionYear,
-            TrackCount = trackCount,
             GenreIDs = ResolveGenres(facts.GenreNames),
             ImageTag = facts.ImageTag,
             IsFavorite = facts.UserData?.IsFavorite
@@ -130,13 +116,12 @@ public sealed class PayloadProjector
 
     /// <summary>Projects an artist.</summary>
     /// <param name="facts">Source facts.</param>
-    /// <param name="albumCount">Number of albums credited to this artist.</param>
     /// <param name="isAlbumArtist">
     /// Whether Jellyfin credits this artist as an album artist rather than only on individual
     /// tracks. The client cannot derive this from anything else in the stream.
     /// </param>
     /// <returns>The wire payload.</returns>
-    public ArtistPayload Artist(ItemFacts facts, int? albumCount, bool isAlbumArtist)
+    public ArtistPayload Artist(ItemFacts facts, bool isAlbumArtist)
     {
         ArgumentNullException.ThrowIfNull(facts);
 
@@ -146,7 +131,6 @@ public sealed class PayloadProjector
             Name = facts.Name,
             SortName = NullIfSameAsName(facts.SortName, facts.Name),
             Biography = facts.Overview,
-            AlbumCount = albumCount,
             ImageTag = facts.ImageTag,
             IsAlbumArtist = isAlbumArtist,
             IsFavorite = facts.UserData?.IsFavorite
@@ -155,12 +139,8 @@ public sealed class PayloadProjector
 
     /// <summary>Projects a playlist.</summary>
     /// <param name="facts">Source facts.</param>
-    /// <param name="entryCount">
-    /// Number of entries actually sent, after duplicates are removed. Sending Jellyfin's raw child
-    /// count would show a total the client's own list can never reach.
-    /// </param>
     /// <returns>The wire payload.</returns>
-    public PlaylistPayload Playlist(ItemFacts facts, int? entryCount)
+    public PlaylistPayload Playlist(ItemFacts facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
 
@@ -169,7 +149,6 @@ public sealed class PayloadProjector
             Id = FormatId(facts.Id),
             Name = facts.Name,
             SortName = NullIfSameAsName(facts.SortName, facts.Name),
-            TrackCount = entryCount,
             ImageTag = facts.ImageTag,
             DateCreated = facts.DateCreated,
             IsFavorite = facts.UserData?.IsFavorite
@@ -179,14 +158,12 @@ public sealed class PayloadProjector
     /// <summary>Projects a genre.</summary>
     /// <param name="id">Genre identifier.</param>
     /// <param name="name">Genre name.</param>
-    /// <param name="albumCount">Number of albums in the genre.</param>
     /// <returns>The wire payload.</returns>
-    public GenrePayload Genre(Guid id, string name, int? albumCount) =>
+    public GenrePayload Genre(Guid id, string name) =>
         new GenrePayload
         {
             Id = FormatId(id),
-            Name = name,
-            AlbumCount = albumCount
+            Name = name
         };
 
     /// <summary>
@@ -209,7 +186,6 @@ public sealed class PayloadProjector
             ArtistName = projected.ArtistName,
             ArtistId = projected.ArtistId,
             ArtistIDs = projected.ArtistIDs,
-            AlbumName = projected.AlbumName,
             AlbumId = projected.AlbumId,
             Duration = projected.Duration,
             IndexNumber = projected.IndexNumber,
@@ -217,7 +193,6 @@ public sealed class PayloadProjector
             ProductionYear = projected.ProductionYear,
             GenreIDs = projected.GenreIDs,
             ImageTag = projected.ImageTag,
-            AlbumImageTag = projected.AlbumImageTag,
             IsFavorite = projected.IsFavorite,
             PlaylistID = FormatId(playlistId),
             PlaylistEntryID = entryId,

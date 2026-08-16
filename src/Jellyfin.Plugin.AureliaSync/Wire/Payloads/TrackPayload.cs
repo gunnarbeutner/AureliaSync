@@ -38,10 +38,6 @@ public class TrackPayload
     [JsonPropertyName("artistIDs")]
     public IReadOnlyList<string>? ArtistIDs { get; set; }
 
-    /// <summary>Gets or sets the album name.</summary>
-    [JsonPropertyName("albumName")]
-    public string? AlbumName { get; set; }
-
     /// <summary>Gets or sets the album identifier. Note the lowercase 'd'.</summary>
     [JsonPropertyName("albumId")]
     public string? AlbumId { get; set; }
@@ -76,13 +72,6 @@ public class TrackPayload
     /// <summary>Gets or sets the track's own Primary image cache tag.</summary>
     [JsonPropertyName("imageTag")]
     public string? ImageTag { get; set; }
-
-    /// <summary>
-    /// Gets or sets the album's Primary image cache tag, so the client can render album art
-    /// without holding the album record.
-    /// </summary>
-    [JsonPropertyName("albumImageTag")]
-    public string? AlbumImageTag { get; set; }
 
     /// <summary>Gets or sets a value indicating whether the calling user favourited this track.</summary>
     [JsonPropertyName("isFavorite")]

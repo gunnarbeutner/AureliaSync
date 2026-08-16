@@ -77,7 +77,6 @@ internal static class FixtureBuilder
             Id = TrackTwoId,
             Name = "Jóga",
             AlbumId = AlbumId,
-            AlbumName = "Homogenic",
             ArtistId = ArtistId,
             ArtistIDs = new[] { ArtistId },
             ArtistName = "Björk",
@@ -154,12 +153,10 @@ internal static class FixtureBuilder
             ArtistName = "Björk",
             ArtistId = ArtistId,
             ArtistIDs = new[] { ArtistId },
-            AlbumName = "Homogenic",
             AlbumId = AlbumId,
             Duration = 244.28,
             IndexNumber = 1,
-            ParentIndexNumber = 1,
-            AlbumImageTag = "albumtag"
+            ParentIndexNumber = 1
         }));
 
         // A tombstone. Only ever sent in changes mode; the payload carries nothing but the id,
@@ -220,7 +217,7 @@ internal static class FixtureBuilder
         // before children, so a client applying incrementally never has a dangling reference.
         lines.Add(Record(Next(), ordinal, WireKind.ItemUpsert, WireEntityType.Genre, GenreId, new GenrePayload
         {
-            Id = GenreId, Name = "Jazz", AlbumCount = 1
+            Id = GenreId, Name = "Jazz"
         }));
 
         lines.Add(Record(Next(), ordinal, WireKind.ItemUpsert, WireEntityType.Artist, ArtistId, new ArtistPayload
@@ -228,7 +225,6 @@ internal static class FixtureBuilder
             Id = ArtistId,
             Name = "Björk",
             Biography = "An artist with a non-ASCII name, to prove UTF-8 survives the wire.",
-            AlbumCount = 1,
             ImageTag = "artisttag",
             IsAlbumArtist = true,
             IsFavorite = true
@@ -241,7 +237,6 @@ internal static class FixtureBuilder
             ArtistName = "Björk",
             ArtistId = ArtistId,
             ProductionYear = 1997,
-            TrackCount = 2,
             GenreIDs = new[] { GenreId },
             ImageTag = "albumtag",
             IsFavorite = false
@@ -254,14 +249,12 @@ internal static class FixtureBuilder
             ArtistName = "Björk",
             ArtistId = ArtistId,
             ArtistIDs = new[] { ArtistId },
-            AlbumName = "Homogenic",
             AlbumId = AlbumId,
             Duration = 244.28,
             IndexNumber = 1,
             ParentIndexNumber = 1,
             ProductionYear = 1997,
             GenreIDs = new[] { GenreId },
-            AlbumImageTag = "albumtag",
             IsFavorite = true
         }));
 
@@ -272,21 +265,18 @@ internal static class FixtureBuilder
             ArtistName = "Björk",
             ArtistId = ArtistId,
             ArtistIDs = new[] { ArtistId },
-            AlbumName = "Homogenic",
             AlbumId = AlbumId,
             Duration = 291.6,
             IndexNumber = 2,
             ParentIndexNumber = 1,
             ProductionYear = 1997,
-            GenreIDs = new[] { GenreId },
-            AlbumImageTag = "albumtag"
+            GenreIDs = new[] { GenreId }
         }));
 
         lines.Add(Record(Next(), ordinal, WireKind.ItemUpsert, WireEntityType.Playlist, PlaylistId, new PlaylistPayload
         {
             Id = PlaylistId,
             Name = "Evening",
-            TrackCount = 2,
             DateCreated = new DateTimeOffset(2024, 3, 1, 9, 30, 0, 0, TimeSpan.Zero)
         }));
 
@@ -300,12 +290,10 @@ internal static class FixtureBuilder
             ArtistName = "Björk",
             ArtistId = ArtistId,
             ArtistIDs = new[] { ArtistId },
-            AlbumName = "Homogenic",
             AlbumId = AlbumId,
             Duration = 291.6,
             IndexNumber = 2,
             ParentIndexNumber = 1,
-            AlbumImageTag = "albumtag",
             PlaylistID = PlaylistId,
             PlaylistEntryID = "entry-a",
             Position = 0
@@ -318,12 +306,10 @@ internal static class FixtureBuilder
             ArtistName = "Björk",
             ArtistId = ArtistId,
             ArtistIDs = new[] { ArtistId },
-            AlbumName = "Homogenic",
             AlbumId = AlbumId,
             Duration = 244.28,
             IndexNumber = 1,
             ParentIndexNumber = 1,
-            AlbumImageTag = "albumtag",
             PlaylistID = PlaylistId,
             PlaylistEntryID = "entry-b",
             Position = 1

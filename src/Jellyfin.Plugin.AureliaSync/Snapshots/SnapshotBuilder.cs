@@ -147,21 +147,14 @@ public sealed class SnapshotBuilder
         var ordinals = new OrdinalRanges(genres.Count, artists.Count, albumIds.Count, emitTrackIds.Count);
 
         var artistIdsByName = LibraryEnumerator.ArtistIdsByName(artists);
-        var albumSummaries = new Dictionary<Guid, AlbumSummary>();
-        var projector = new PayloadProjector(artistIdsByName, albumSummaries, _enumerator.GenreId);
+        var projector = new PayloadProjector(artistIdsByName, _enumerator.GenreId);
 
         var userData = new List<UserDataPayload>();
         long written = 0;
 
-        // ---- Albums are hydrated first, because tracks need their names and artwork. ----
+        // ---- Albums are hydrated first, so their user data joins the same stream. ----
         await _store.SetProgressAsync(generation, "album", 0, albumIds.Count, cancellationToken).ConfigureAwait(false);
         var albumFacts = new List<ItemFacts>(albumIds.Count);
-
-        // Album counts are derived here rather than taken from Jellyfin's ItemCounts, which is only
-        // populated when a query explicitly asks for counts and is otherwise null. Deriving them
-        // also makes the numbers agree with what is actually sent.
-        var albumCountByArtist = new Dictionary<Guid, int>();
-        var albumCountByGenre = new Dictionary<Guid, int>();
 
         foreach (var batch in LibraryEnumerator.Batch(albumIds, batchSize))
         {
@@ -171,40 +164,16 @@ public sealed class SnapshotBuilder
             {
                 var facts = _reader.Read(item, userId);
                 albumFacts.Add(facts);
-                albumSummaries[facts.Id] = new AlbumSummary(facts.Name, facts.ImageTag);
                 Collect(projector, facts, userData);
-
-                var credits = facts.AlbumArtistNames.Count > 0 ? facts.AlbumArtistNames : facts.ArtistNames;
-                foreach (var artistId in projector.ResolveArtists(credits))
-                {
-                    if (Guid.TryParseExact(artistId, "N", out var parsed))
-                    {
-                        albumCountByArtist[parsed] = albumCountByArtist.GetValueOrDefault(parsed) + 1;
-                    }
-                }
-
-                foreach (var genreId in projector.ResolveGenres(facts.GenreNames) ?? Enumerable.Empty<string>())
-                {
-                    if (Guid.TryParseExact(genreId, "N", out var parsed))
-                    {
-                        albumCountByGenre[parsed] = albumCountByGenre.GetValueOrDefault(parsed) + 1;
-                    }
-                }
             }
 
             await ThrottleAsync(configuration, cancellationToken).ConfigureAwait(false);
         }
 
-        // ---- Tracks: written straight into their reserved range, counting per album as we go. ----
+        // ---- Tracks: written straight into their reserved range. ----
         await _store.SetProgressAsync(generation, "track", 0, emitTrackIds.Count, cancellationToken)
             .ConfigureAwait(false);
         var albumIdSet = albumIds.ToHashSet();
-
-        // A full build counts tracks per album as it hydrates them. A repair never sees the
-        // unchanged ones, so it asks Jellyfin to count instead — cheap, because nothing is loaded.
-        var trackCountByAlbum = repairSince is not null
-            ? new Dictionary<Guid, int>(_enumerator.TrackCountsByAlbum(user, albumIds))
-            : new Dictionary<Guid, int>();
 
         var trackFactsById = new Dictionary<Guid, ItemFacts>();
         var trackOrdinal = ordinals.TrackStart;
@@ -223,11 +192,6 @@ public sealed class SnapshotBuilder
 
                 rows.Add(NewRow(++trackOrdinal, WireKind.ItemUpsert, WireEntityType.Track, payload.Id, payload));
                 Collect(projector, facts, userData);
-
-                if (facts.AlbumId is { } albumId && repairSince is null)
-                {
-                    trackCountByAlbum[albumId] = trackCountByAlbum.GetValueOrDefault(albumId) + 1;
-                }
 
                 // Playlist entries repeat the whole track, and a playlist can reference a track
                 // filed anywhere, so the facts are kept rather than re-read later.
@@ -256,8 +220,7 @@ public sealed class SnapshotBuilder
         var genreOrdinal = ordinals.GenreStart;
         foreach (var (item, _) in genres.OrderBy(g => g.Item.Id.ToString("N"), StringComparer.Ordinal))
         {
-            var payload = projector.Genre(
-                item.Id, item.Name ?? string.Empty, albumCountByGenre.GetValueOrDefault(item.Id));
+            var payload = projector.Genre(item.Id, item.Name ?? string.Empty);
             genreRows.Add(NewRow(++genreOrdinal, WireKind.ItemUpsert, WireEntityType.Genre, payload.Id, payload));
         }
 
@@ -272,8 +235,7 @@ public sealed class SnapshotBuilder
         foreach (var (item, _) in artists.OrderBy(a => a.Item.Id.ToString("N"), StringComparer.Ordinal))
         {
             var facts = _reader.Read(item, userId);
-            var payload = projector.Artist(
-                facts, albumCountByArtist.GetValueOrDefault(item.Id), albumArtistIds.Contains(item.Id));
+            var payload = projector.Artist(facts, albumArtistIds.Contains(item.Id));
             artistRows.Add(NewRow(++artistOrdinal, WireKind.ItemUpsert, WireEntityType.Artist, payload.Id, payload));
             Collect(projector, facts, userData);
         }
@@ -282,14 +244,14 @@ public sealed class SnapshotBuilder
         written += artistRows.Count;
         await _store.SetStreamableThroughAsync(generation, artistOrdinal, cancellationToken).ConfigureAwait(false);
 
-        // ---- Albums, now that their track counts are known. ----
+        // ---- Albums. ----
         await _store.SetProgressAsync(generation, "albumWrite", 0, albumFacts.Count, cancellationToken)
             .ConfigureAwait(false);
         var albumRows = new List<SnapshotRow>(albumFacts.Count);
         var albumOrdinal = ordinals.AlbumStart;
         foreach (var facts in albumFacts.OrderBy(a => a.Id.ToString("N"), StringComparer.Ordinal))
         {
-            var payload = projector.Album(facts, trackCountByAlbum.GetValueOrDefault(facts.Id));
+            var payload = projector.Album(facts);
             albumRows.Add(NewRow(++albumOrdinal, WireKind.ItemUpsert, WireEntityType.Album, payload.Id, payload));
         }
 
@@ -314,7 +276,7 @@ public sealed class SnapshotBuilder
 
             var groupKey = playlist.Id.ToString("N");
             var playlistFacts = _reader.Read(playlist, userId);
-            var playlistPayload = projector.Playlist(playlistFacts, entries.Count);
+            var playlistPayload = projector.Playlist(playlistFacts);
 
             // The upsert leads its own entries and shares their group key, so the two never land in
             // different segments. The client treats a playlist upsert as "clear this playlist's

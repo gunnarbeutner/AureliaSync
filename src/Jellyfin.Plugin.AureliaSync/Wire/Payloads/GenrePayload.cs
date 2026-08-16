@@ -25,8 +25,4 @@ public class GenrePayload
     /// <summary>Gets or sets the genre name.</summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
-
-    /// <summary>Gets or sets the number of albums in this genre.</summary>
-    [JsonPropertyName("albumCount")]
-    public int? AlbumCount { get; set; }
 }

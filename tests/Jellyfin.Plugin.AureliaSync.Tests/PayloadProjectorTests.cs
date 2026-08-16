@@ -13,9 +13,7 @@ public class PayloadProjectorTests
     private static readonly Guid AlbumId = Guid.Parse("33333333-3333-3333-3333-333333333333");
     private static readonly Guid TrackId = Guid.Parse("44444444-4444-4444-4444-444444444444");
 
-    private static PayloadProjector NewProjector(
-        IReadOnlyDictionary<Guid, AlbumSummary>? albums = null,
-        IReadOnlyDictionary<string, Guid>? artists = null)
+    private static PayloadProjector NewProjector(IReadOnlyDictionary<string, Guid>? artists = null)
     {
         // Case-insensitive, matching how Jellyfin resolves artist names.
         var artistMap = artists ?? new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase)
@@ -24,15 +22,9 @@ public class PayloadProjectorTests
             ["Beta"] = ArtistB
         };
 
-        var albumMap = albums ?? new Dictionary<Guid, AlbumSummary>
-        {
-            [AlbumId] = new AlbumSummary("Record", "albumtag")
-        };
-
         // Deterministic stand-in for GetMusicGenreId, which is itself a pure hash.
         return new PayloadProjector(
             artistMap,
-            albumMap,
             name => new Guid(System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(name))));
     }
 
@@ -46,14 +38,14 @@ public class PayloadProjectorTests
     };
 
     [Fact]
-    public void TrackCarriesAlbumNameAndArtFromTheAlbumMap()
+    public void TrackNamesItsAlbumOnlyByIdentifier()
     {
+        // The album owns its name and its artwork. A track carrying copies of them would keep
+        // whatever they were when the track was last saved, which is not when they change.
         var payload = NewProjector().Track(Track("Alpha"));
 
         Assert.Equal("44444444444444444444444444444444", payload.Id);
-        Assert.Equal("Record", payload.AlbumName);
         Assert.Equal("33333333333333333333333333333333", payload.AlbumId);
-        Assert.Equal("albumtag", payload.AlbumImageTag);
     }
 
     [Fact]
@@ -118,17 +110,13 @@ public class PayloadProjectorTests
     }
 
     [Fact]
-    public void ATrackWhoseAlbumIsMissingStillProjects()
+    public void ATrackWithNoAlbumStillProjects()
     {
         // Happens when an album is outside the user's visible libraries, or mid-scan.
-        var projector = NewProjector(albums: new Dictionary<Guid, AlbumSummary>());
-        var payload = projector.Track(Track("Alpha"));
+        var payload = NewProjector().Track(Track("Alpha") with { AlbumId = null });
 
-        Assert.Null(payload.AlbumName);
-        Assert.Null(payload.AlbumImageTag);
-
-        // The identifier is still sent: the client can link it once the album arrives.
-        Assert.Equal("33333333333333333333333333333333", payload.AlbumId);
+        Assert.Null(payload.AlbumId);
+        Assert.Equal("44444444444444444444444444444444", payload.Id);
     }
 
     [Theory]
@@ -188,12 +176,12 @@ public class PayloadProjectorTests
         var album = new ItemFacts { Id = AlbumId, Name = "Record" };
 
         var withAlbumArtist = projector.Album(
-            album with { AlbumArtistNames = new[] { "Alpha" }, ArtistNames = new[] { "Beta" } }, 9);
+            album with { AlbumArtistNames = new[] { "Alpha" }, ArtistNames = new[] { "Beta" } });
         Assert.Equal("Alpha", withAlbumArtist.ArtistName);
         Assert.Equal("11111111111111111111111111111111", withAlbumArtist.ArtistId);
 
         // A missing album-artist tag should not produce "Unknown Artist" on the client.
-        var withoutAlbumArtist = projector.Album(album with { ArtistNames = new[] { "Beta" } }, 9);
+        var withoutAlbumArtist = projector.Album(album with { ArtistNames = new[] { "Beta" } });
         Assert.Equal("Beta", withoutAlbumArtist.ArtistName);
         Assert.Equal("22222222222222222222222222222222", withoutAlbumArtist.ArtistId);
     }
@@ -206,12 +194,10 @@ public class PayloadProjectorTests
         var projector = NewProjector();
         var facts = new ItemFacts { Id = ArtistA, Name = "Alpha", Overview = "bio" };
 
-        Assert.True(projector.Artist(facts, 3, isAlbumArtist: true).IsAlbumArtist);
-        Assert.False(projector.Artist(facts, 0, isAlbumArtist: false).IsAlbumArtist);
+        Assert.True(projector.Artist(facts, isAlbumArtist: true).IsAlbumArtist);
+        Assert.False(projector.Artist(facts, isAlbumArtist: false).IsAlbumArtist);
 
-        var payload = projector.Artist(facts, 3, isAlbumArtist: true);
-        Assert.Equal("bio", payload.Biography);
-        Assert.Equal(3, payload.AlbumCount);
+        Assert.Equal("bio", projector.Artist(facts, isAlbumArtist: true).Biography);
     }
 
     [Fact]
@@ -227,7 +213,7 @@ public class PayloadProjectorTests
         // The client upserts the track from this same record, so it must be complete.
         Assert.Equal("44444444444444444444444444444444", entry.Id);
         Assert.Equal("Song", entry.Name);
-        Assert.Equal("Record", entry.AlbumName);
+        Assert.Equal("33333333333333333333333333333333", entry.AlbumId);
         Assert.Equal(213.4, entry.Duration);
         Assert.Equal(new[] { "11111111111111111111111111111111" }, entry.ArtistIDs);
     }

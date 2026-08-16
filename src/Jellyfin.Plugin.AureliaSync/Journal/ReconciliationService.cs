@@ -44,7 +44,6 @@ namespace Jellyfin.Plugin.AureliaSync.Journal;
 /// </remarks>
 public sealed class ReconciliationService
 {
-    private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
     private readonly SyncRuntime _runtime;
     private readonly BaseItemFactsReader _reader;
@@ -66,7 +65,6 @@ public sealed class ReconciliationService
         SyncRuntime runtime,
         ILogger logger)
     {
-        _libraryManager = libraryManager;
         _userManager = userManager;
         _runtime = runtime;
         _logger = logger;
@@ -146,35 +144,29 @@ public sealed class ReconciliationService
         var watermark = seeding ? null : ReadWatermark(scope);
         var passStarted = DateTime.UtcNow;
 
-        // Albums are hydrated either way — tracks need their names and artwork tags — so the
-        // watermark is applied only to tracks, which are where the 30,000 items are.
+        // The watermark is applied only to tracks, which are where the 30,000 items are.
         var albumIds = _enumerator.EnumerateIds(user, BaseItemKind.MusicAlbum);
         var albumIdSet = albumIds.ToHashSet();
-        var albumSummaries = new Dictionary<Guid, AlbumSummary>();
         var artists = _enumerator.Artists(user);
         var projector = new PayloadProjector(
-            LibraryEnumerator.ArtistIdsByName(artists), albumSummaries, _enumerator.GenreId);
+            LibraryEnumerator.ArtistIdsByName(artists), _enumerator.GenreId);
 
         var batchSize = Math.Max(50, configuration.SnapshotHydrationBatchSize);
 
-        // Albums first, so tracks can name their album without a second pass.
         foreach (var batch in LibraryEnumerator.Batch(albumIds, batchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             foreach (var item in _enumerator.Hydrate(user, batch))
             {
-                // Albums are read either way: tracks need the name and artwork tag, whether or not
-                // the album itself changed.
-                var facts = _reader.Read(item, user.Id);
-                albumSummaries[facts.Id] = new AlbumSummary(facts.Name, facts.ImageTag);
-
                 var revision = Revision(item);
-                if (CanSkip(known, seen, inventory, WireEntityType.Album, facts.Id, revision))
+                if (CanSkip(known, seen, inventory, WireEntityType.Album, item.Id, revision))
                 {
                     skipped++;
                     continue;
                 }
+
+                var facts = _reader.Read(item, user.Id);
 
                 Compare(
                     records,
@@ -184,7 +176,7 @@ public sealed class ReconciliationService
                     scope,
                     WireEntityType.Album,
                     facts.Id,
-                    JsonSerializer.SerializeToUtf8Bytes(projector.Album(facts, null), WireSchema.JsonOptions),
+                    JsonSerializer.SerializeToUtf8Bytes(projector.Album(facts), WireSchema.JsonOptions),
                     revision);
             }
         }
@@ -233,36 +225,9 @@ public sealed class ReconciliationService
 
         // Artists and genres are among the main reasons this pass exists: Jellyfin's events for
         // item-by-name entities are unreliable, so drift here would otherwise never be reported.
-        var artistAlbumCounts = new Dictionary<Guid, int>();
-        var genreAlbumCounts = new Dictionary<Guid, int>();
-
-        foreach (var albumId in albumIds)
-        {
-            if (_libraryManager.GetItemById(albumId) is not MusicAlbum album)
-            {
-                continue;
-            }
-
-            var credits = album.AlbumArtists.Count > 0 ? album.AlbumArtists : album.Artists;
-            foreach (var artistId in projector.ResolveArtists(credits))
-            {
-                if (Guid.TryParseExact(artistId, "N", out var parsed))
-                {
-                    artistAlbumCounts[parsed] = artistAlbumCounts.GetValueOrDefault(parsed) + 1;
-                }
-            }
-
-            foreach (var genreId in projector.ResolveGenres(album.Genres ?? Array.Empty<string>())
-                     ?? Enumerable.Empty<string>())
-            {
-                if (Guid.TryParseExact(genreId, "N", out var parsed))
-                {
-                    genreAlbumCounts[parsed] = genreAlbumCounts.GetValueOrDefault(parsed) + 1;
-                }
-            }
-        }
-
         var albumArtistIds = _enumerator.AlbumArtistIds(user);
+        var artistsChanged = false;
+        var artistCountBefore = records.Count;
         foreach (var (item, _) in artists)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -277,12 +242,13 @@ public sealed class ReconciliationService
                 WireEntityType.Artist,
                 facts.Id,
                 JsonSerializer.SerializeToUtf8Bytes(
-                    projector.Artist(
-                        facts,
-                        artistAlbumCounts.GetValueOrDefault(item.Id),
-                        albumArtistIds.Contains(item.Id)),
+                    projector.Artist(facts, albumArtistIds.Contains(item.Id)),
                     WireSchema.JsonOptions));
         }
+
+        artistsChanged = records.Count != artistCountBefore
+            || known.Keys.Any(k => k.StartsWith(WireEntityType.Artist + ":", StringComparison.Ordinal)
+                && !seen.Contains(k));
 
         foreach (var (item, _) in _enumerator.Genres(user))
         {
@@ -297,8 +263,7 @@ public sealed class ReconciliationService
                 WireEntityType.Genre,
                 item.Id,
                 JsonSerializer.SerializeToUtf8Bytes(
-                    projector.Genre(
-                        item.Id, item.Name ?? string.Empty, genreAlbumCounts.GetValueOrDefault(item.Id)),
+                    projector.Genre(item.Id, item.Name ?? string.Empty),
                     WireSchema.JsonOptions));
         }
 
@@ -330,7 +295,7 @@ public sealed class ReconciliationService
                 groupKey,
                 WireSchema.WireSchemaVersionMax,
                 JsonSerializer.SerializeToUtf8Bytes(
-                    projector.Playlist(facts, entries.Count), WireSchema.JsonOptions)));
+                    projector.Playlist(facts), WireSchema.JsonOptions)));
 
             foreach (var entry in entries)
             {
@@ -390,6 +355,16 @@ public sealed class ReconciliationService
         }
 
         await WriteInventoryAsync(scope, inventory, seen, cancellationToken).ConfigureAwait(false);
+
+        if (artistsChanged)
+        {
+            // A track names its artists but identifies them through the library's artist entities,
+            // so an artist appearing or vanishing changes track payloads without touching a single
+            // track. Nothing in a track's own timestamp reflects that, which is why the next pass
+            // has to be told to look at all of them.
+            await InvalidateTrackProjectionsAsync(scope, cancellationToken).ConfigureAwait(false);
+            return records.Count;
+        }
 
         // Taken from before the pass began, so anything saved while it ran is examined next time
         // rather than falling into the gap between the two.
@@ -460,6 +435,38 @@ public sealed class ReconciliationService
             cancellationToken);
 
     private static string WatermarkKey(string scope) => "reconcile.watermark." + scope;
+
+    /// <summary>
+    /// Makes the next pass re-project every track for one user.
+    /// </summary>
+    /// <remarks>
+    /// Two things independently suppress work on a track, and both have to go: the watermark stops
+    /// it being enumerated at all, and its recorded revision stops it being projected once it is.
+    /// </remarks>
+    /// <param name="scope">Owning user.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task that completes once the next pass is unblocked.</returns>
+    private Task InvalidateTrackProjectionsAsync(string scope, CancellationToken cancellationToken) =>
+        _runtime.Database.WriteAsync(
+            (connection, transaction) =>
+            {
+                SyncDatabase.ExecuteWithParameters(
+                    connection,
+                    transaction,
+                    "DELETE FROM meta WHERE key = $key;",
+                    ("$key", WatermarkKey(scope)));
+
+                SyncDatabase.ExecuteWithParameters(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE inventory SET observed_revision = NULL
+                     WHERE scope = $scope AND entity_type = $type;
+                    """,
+                    ("$scope", scope),
+                    ("$type", WireEntityType.Track));
+            },
+            cancellationToken);
 
     /// <summary>
     /// Jellyfin's own last-saved timestamp, in ticks, or null when it has none.

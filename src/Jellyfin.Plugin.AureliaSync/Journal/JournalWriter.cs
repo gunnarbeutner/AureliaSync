@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.AureliaSync.Configuration;
 using Jellyfin.Plugin.AureliaSync.Projection;
@@ -13,6 +14,7 @@ using Jellyfin.Plugin.AureliaSync.Snapshots;
 using Jellyfin.Plugin.AureliaSync.Storage;
 using Jellyfin.Plugin.AureliaSync.Wire;
 using MediaBrowser.Controller.Drawing;
+using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Library;
@@ -284,6 +286,27 @@ public sealed class JournalWriter : IHostedService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Asks whether any album credits this artist, rather than only individual tracks.
+    /// </summary>
+    /// <remarks>
+    /// A delta has no library-wide album-artist set to consult, so this asks Jellyfin for one
+    /// album — the answer is the same whether there is one or a hundred.
+    /// </remarks>
+    private bool IsAlbumArtist(MusicArtist artist)
+    {
+        var query = new InternalItemsQuery
+        {
+            IncludeItemTypes = new[] { BaseItemKind.MusicAlbum },
+            AlbumArtistIds = new[] { artist.Id },
+            Limit = 1,
+            Recursive = true,
+            DtoOptions = new DtoOptions(false) { EnableImages = false, EnableUserData = false }
+        };
+
+        return _libraryManager.GetCount(query) > 0;
+    }
+
     private static bool IsInteresting(BaseItem item) =>
         item is Audio or MusicAlbum or MusicArtist or MusicGenre or Playlist;
 
@@ -517,7 +540,7 @@ public sealed class JournalWriter : IHostedService, IDisposable
             WireEntityType.Playlist,
             groupKey,
             WireSchema.WireSchemaVersionMax,
-            JsonSerializer.SerializeToUtf8Bytes(projector.Playlist(facts, entries.Count), WireSchema.JsonOptions)));
+            JsonSerializer.SerializeToUtf8Bytes(projector.Playlist(facts), WireSchema.JsonOptions)));
 
         foreach (var entry in entries)
         {
@@ -575,7 +598,7 @@ public sealed class JournalWriter : IHostedService, IDisposable
     /// </summary>
     /// <remarks>
     /// The snapshot builds library-wide maps once because it touches everything. A delta touches
-    /// one item, so the maps are built per item instead — two lookups rather than a full crawl.
+    /// one item, so the map is built per item instead — one lookup rather than a full crawl.
     /// </remarks>
     private PayloadProjector BuildProjector(BaseItem item)
     {
@@ -603,17 +626,7 @@ public sealed class JournalWriter : IHostedService, IDisposable
             }
         }
 
-        var albums = new Dictionary<Guid, AlbumSummary>();
-        if (item is Audio track)
-        {
-            var albumId = !track.ParentId.Equals(Guid.Empty) ? track.ParentId : track.AlbumEntity?.Id;
-            if (albumId is { } id && _libraryManager.GetItemById(id) is { } albumItem)
-            {
-                albums[id] = new AlbumSummary(albumItem.Name, _reader!.ReadPrimaryImageTag(albumItem));
-            }
-        }
-
-        return new PayloadProjector(artistIds, albums, _libraryManager.GetMusicGenreId);
+        return new PayloadProjector(artistIds, _libraryManager.GetMusicGenreId);
     }
 
     private ProjectedPayload Project(
@@ -622,9 +635,9 @@ public sealed class JournalWriter : IHostedService, IDisposable
         object? payload = item switch
         {
             Audio => projector.Track(facts),
-            MusicAlbum => projector.Album(facts, null),
-            MusicArtist => projector.Artist(facts, null, isAlbumArtist: true),
-            MusicGenre => projector.Genre(facts.Id, facts.Name, null),
+            MusicAlbum => projector.Album(facts),
+            MusicArtist artist => projector.Artist(facts, IsAlbumArtist(artist)),
+            MusicGenre => projector.Genre(facts.Id, facts.Name),
             _ => null
         };
 

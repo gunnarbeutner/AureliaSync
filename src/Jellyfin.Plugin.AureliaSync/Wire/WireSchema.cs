@@ -22,12 +22,12 @@ public static class WireSchema
     /// <summary>
     /// Oldest wire-schema version this build can emit.
     /// </summary>
-    public const int WireSchemaVersionMin = 1;
+    public const int WireSchemaVersionMin = 2;
 
     /// <summary>
     /// Newest wire-schema version this build can emit.
     /// </summary>
-    public const int WireSchemaVersionMax = 1;
+    public const int WireSchemaVersionMax = 2;
 
     /// <summary>
     /// The Jellyfin ABI this build targets, matching the release manifest.

@@ -28,10 +28,6 @@ public class ArtistPayload
     [JsonPropertyName("biography")]
     public string? Biography { get; set; }
 
-    /// <summary>Gets or sets the number of albums by this artist.</summary>
-    [JsonPropertyName("albumCount")]
-    public int? AlbumCount { get; set; }
-
     /// <summary>Gets or sets the Primary image cache tag. The client composes the URL.</summary>
     [JsonPropertyName("imageTag")]
     public string? ImageTag { get; set; }

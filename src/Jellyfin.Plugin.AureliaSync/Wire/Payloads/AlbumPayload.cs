@@ -32,14 +32,6 @@ public class AlbumPayload
     [JsonPropertyName("productionYear")]
     public int? ProductionYear { get; set; }
 
-    /// <summary>
-    /// Gets or sets the number of tracks. This must equal the number of visible tracks actually
-    /// sent for the album, not Jellyfin's raw child count, or the client's header disagrees with
-    /// its own list.
-    /// </summary>
-    [JsonPropertyName("trackCount")]
-    public int? TrackCount { get; set; }
-
     /// <summary>Gets or sets the genre identifiers. Note the uppercase 'IDs'.</summary>
     [JsonPropertyName("genreIDs")]
     public IReadOnlyList<string>? GenreIDs { get; set; }

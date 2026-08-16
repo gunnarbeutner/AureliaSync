@@ -114,49 +114,6 @@ public sealed class LibraryEnumerator
     }
 
     /// <summary>
-    /// Counts the tracks filed under each album, without loading any of them.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A full build derives these counts for free while hydrating tracks. A repair does not hydrate
-    /// unchanged tracks — that is the entire saving — so it needs the counts another way, and an
-    /// album whose <c>trackCount</c> disagreed with the client's own row count would be worse than
-    /// the stale metadata the repair set out to fix.
-    /// </para>
-    /// <para>
-    /// This is the one query in this class that sets <c>ParentId</c>, which per the note above skips
-    /// library-access filtering. It is safe here only because the album identifiers were themselves
-    /// produced by an access-filtered enumeration, so every parent is one the user can already see;
-    /// nothing outside that set is ever asked about, and no item is returned, only a count.
-    /// </para>
-    /// </remarks>
-    /// <param name="user">The user whose visibility applies.</param>
-    /// <param name="albumIds">Albums to count, from an access-filtered enumeration.</param>
-    /// <returns>Track count per album.</returns>
-    public IReadOnlyDictionary<Guid, int> TrackCountsByAlbum(User user, IReadOnlyList<Guid> albumIds)
-    {
-        ArgumentNullException.ThrowIfNull(albumIds);
-
-        var counts = new Dictionary<Guid, int>(albumIds.Count);
-
-        foreach (var albumId in albumIds)
-        {
-            var query = new InternalItemsQuery(user)
-            {
-                Recursive = true,
-                ParentId = albumId,
-                IncludeItemTypes = new[] { BaseItemKind.Audio },
-                IsVirtualItem = false,
-                DtoOptions = new DtoOptions(false) { EnableImages = false, EnableUserData = false }
-            };
-
-            counts[albumId] = _libraryManager.GetItemIds(query).Count;
-        }
-
-        return counts;
-    }
-
-    /// <summary>
     /// Loads a batch of items by identifier, with images and user data attached.
     /// </summary>
     /// <remarks>

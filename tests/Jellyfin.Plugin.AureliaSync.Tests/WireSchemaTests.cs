@@ -34,7 +34,6 @@ public class WireSchemaTests
             ArtistName = "A & B",
             ArtistId = "11111111111111111111111111111111",
             ArtistIDs = new[] { "11111111111111111111111111111111", "22222222222222222222222222222222" },
-            AlbumName = "Record",
             AlbumId = "33333333333333333333333333333333",
             Duration = 213.5,
             IndexNumber = 4,
@@ -42,7 +41,6 @@ public class WireSchemaTests
             ProductionYear = 1997,
             GenreIDs = new[] { "44444444444444444444444444444444" },
             ImageTag = "tagA",
-            AlbumImageTag = "tagB",
             IsFavorite = true
         });
 
@@ -50,10 +48,10 @@ public class WireSchemaTests
             "{\"id\":\"6f3a1b2c3d4e5f60718293a4b5c6d7e8\",\"name\":\"Song\",\"sortName\":\"Song\","
             + "\"artistName\":\"A & B\",\"artistId\":\"11111111111111111111111111111111\","
             + "\"artistIDs\":[\"11111111111111111111111111111111\",\"22222222222222222222222222222222\"],"
-            + "\"albumName\":\"Record\",\"albumId\":\"33333333333333333333333333333333\",\"duration\":213.5,"
+            + "\"albumId\":\"33333333333333333333333333333333\",\"duration\":213.5,"
             + "\"indexNumber\":4,\"parentIndexNumber\":1,\"productionYear\":1997,"
             + "\"genreIDs\":[\"44444444444444444444444444444444\"],\"imageTag\":\"tagA\","
-            + "\"albumImageTag\":\"tagB\",\"isFavorite\":true}",
+            + "\"isFavorite\":true}",
             json);
     }
 
@@ -62,33 +60,33 @@ public class WireSchemaTests
     {
         Assert.Equal(
             "{\"id\":\"a1\",\"name\":\"Rec\",\"artistName\":\"A\",\"artistId\":\"b1\","
-            + "\"productionYear\":2001,\"trackCount\":9,\"genreIDs\":[\"g1\"],\"imageTag\":\"t\",\"isFavorite\":false}",
+            + "\"productionYear\":2001,\"genreIDs\":[\"g1\"],\"imageTag\":\"t\",\"isFavorite\":false}",
             Serialize(new AlbumPayload
             {
                 Id = "a1", Name = "Rec", ArtistName = "A", ArtistId = "b1",
-                ProductionYear = 2001, TrackCount = 9,
+                ProductionYear = 2001,
                 GenreIDs = new[] { "g1" }, ImageTag = "t", IsFavorite = false
             }));
 
         Assert.Equal(
-            "{\"id\":\"b1\",\"name\":\"A\",\"biography\":\"bio\",\"albumCount\":3,\"imageTag\":\"t\"}",
+            "{\"id\":\"b1\",\"name\":\"A\",\"biography\":\"bio\",\"imageTag\":\"t\"}",
             Serialize(new ArtistPayload
             {
-                Id = "b1", Name = "A", Biography = "bio", AlbumCount = 3, ImageTag = "t"
+                Id = "b1", Name = "A", Biography = "bio", ImageTag = "t"
             }));
 
         Assert.Equal(
-            "{\"id\":\"p1\",\"name\":\"Mix\",\"trackCount\":2,\"dateCreated\":\"2026-08-13T15:48:55.123Z\"}",
+            "{\"id\":\"p1\",\"name\":\"Mix\",\"dateCreated\":\"2026-08-13T15:48:55.123Z\"}",
             Serialize(new PlaylistPayload
             {
-                Id = "p1", Name = "Mix", TrackCount = 2,
+                Id = "p1", Name = "Mix",
                 DateCreated = new DateTimeOffset(2026, 8, 13, 15, 48, 55, 123, TimeSpan.Zero)
             }));
 
         // Genres carry no artwork, sort name, or user state: the client has nowhere to put them.
         Assert.Equal(
-            "{\"id\":\"g1\",\"name\":\"Jazz\",\"albumCount\":7}",
-            Serialize(new GenrePayload { Id = "g1", Name = "Jazz", AlbumCount = 7 }));
+            "{\"id\":\"g1\",\"name\":\"Jazz\"}",
+            Serialize(new GenrePayload { Id = "g1", Name = "Jazz" }));
     }
 
     [Fact]
@@ -215,7 +213,7 @@ public class WireSchemaTests
             ServerTime = new DateTimeOffset(2026, 8, 13, 15, 48, 55, 123, TimeSpan.Zero)
         });
         Assert.Contains("\"kind\":\"segment.begin\"", begin, StringComparison.Ordinal);
-        Assert.Contains("\"wireSchemaVersion\":1", begin, StringComparison.Ordinal);
+        Assert.Contains("\"wireSchemaVersion\":2", begin, StringComparison.Ordinal);
         Assert.Contains("\"mode\":\"snapshot\"", begin, StringComparison.Ordinal);
 
         var end = Serialize(new SegmentEnd
